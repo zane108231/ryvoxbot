@@ -36,6 +36,12 @@ restarting the bots.
    npm start
    ```
 
+The app also serves a plain-text health status at `/` using Node's built-in
+HTTP server. It listens on Render's `PORT` environment variable (or port 3000
+when running locally), so you can visit the Render service URL to check how many
+of the five Discord bots are connected. Configure `ryvoxbot.onrender.com` as a
+custom domain in Render if you want that specific address.
+
 ## Configure a server
 
 In the server, only the user ID `766135407590244383` can use `/setreaction`

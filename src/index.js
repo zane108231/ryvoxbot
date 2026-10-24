@@ -12,6 +12,7 @@ const {
 } = require("discord.js");
 const { GoogleGenAI, ThinkingLevel } = require("@google/genai");
 const fs = require("node:fs");
+const http = require("node:http");
 const path = require("node:path");
 const personality = require("./personality");
 const xinPersonality = require("./xin-personality");
@@ -148,6 +149,26 @@ const clients = botTokens.map(
       ],
     }),
 );
+const httpServer = http.createServer((request, response) => {
+    const onlineBotCount = clients.filter((client) => client.isReady()).length;
+    response.writeHead(200, {
+      "Content-Type": "text/plain; charset=utf-8",
+      "Cache-Control": "no-store",
+    });
+    response.end(
+      `Ryvox bot is online.\nDiscord bots connected: ${onlineBotCount}/${clients.length}.\n`,
+    );
+});
+const httpPort = Number(process.env.PORT || 3000);
+
+httpServer.on("error", (error) => {
+    console.error("Health-check HTTP server failed:", error);
+    process.exitCode = 1;
+});
+httpServer.listen(httpPort, "0.0.0.0", () => {
+    console.log(`Health-check HTTP server listening on port ${httpPort}.`);
+});
+
 const primaryClient = clients[0];
 const rest = new REST({ version: "10" }).setToken(botTokens[0]);
 
