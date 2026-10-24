@@ -1,0 +1,17 @@
+{
+  "name": "discord-channel-emoji-reactor",
+  "version": "1.0.0",
+  "description": "A Discord bot that reacts to every message in a configured channel.",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "dependencies": {
+    "@google/genai": "^2.31.0",
+    "discord.js": "^14.27.0",
+    "dotenv": "^17.0.0"
+  }
+}
