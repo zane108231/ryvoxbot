@@ -186,14 +186,18 @@ async function registerCommand(guildId) {
   );
 }
 
-async function reactToMessage(message, configuration) {
-  const alreadyReacted = message.reactions.cache.some(
-    (reaction) =>
-      reaction.me && reaction.emoji.toString() === configuration.emojiId,
-  );
+async function reactToMessage(message, configuration, client) {
+  const existingReaction =
+    message.reactions.cache.get(configuration.emojiId) ||
+    message.reactions.cache.find(
+      (r) => r.emoji.toString() === configuration.emojiId,
+    );
 
-  if (alreadyReacted) {
-    return false;
+  if (existingReaction) {
+    const users = await existingReaction.users.fetch();
+    if (users.has(client.user.id)) {
+      return false;
+    }
   }
 
   await message.react(configuration.emojiId);
@@ -278,7 +282,7 @@ async function backfillChannel(client, guildId, configuration, botNumber) {
 
     for (const message of messages.values()) {
       try {
-        if (await reactToMessage(message, configuration)) {
+        if (await reactToMessage(message, configuration, client)) {
           reactedCount += 1;
         }
       } catch (error) {
@@ -832,7 +836,7 @@ clients.forEach((client, index) => {
     const configuration = settings[message.guildId];
     if (configuration && message.channelId === configuration.channelId) {
       try {
-        await reactToMessage(message, configuration);
+        await reactToMessage(message, configuration, client);
       } catch (error) {
         console.error(
           `Bot ${index + 1} could not react to message ${message.id} in channel ${message.channelId}:`,
@@ -883,8 +887,8 @@ clients.forEach((client, index) => {
           .trim();
     if (!userMessage) {
       const emptyMentionReply = isRuta
-        ? "Ping mo pa lang ako? Sabihin mo muna gusto mo, teh. 🙄"
-        : "hala, ping mo lang ako? sabihin mo naman kung anong kailangan mo 🥹";
+        ? "sabihin mo ano gusto mo gago"
+        : "tanga kaba ano?";
       await sendAiReply(message, emptyMentionReply);
       return;
     }
