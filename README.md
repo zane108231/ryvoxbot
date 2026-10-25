@@ -44,11 +44,15 @@ custom domain in Render if you want that specific address.
 
 ## Configure a server
 
-In the server, only the user ID `766135407590244383` can use `/setreaction`
-through the primary bot. Select a text channel, and all five bots will use that
+The `adminUserIds` array in `config.json` controls who can use the bot's admin
+slash commands. It currently contains `766135407590244383` and
+`1514233018284380263`; edit this array to change the admins. Both users can use
+`/setreaction`, `/ai`, `/autoreactor`, `/reply`, and `/sendmessage` through the
+primary bot.
+Select a text channel with `/setreaction`, and all five bots will use that
 server's custom emoji named `haha`. The emoji must exist in the server, and all
 five bot accounts must be members of that server. Only the primary bot
-registers the slash commands, and only that user ID is authorized by the bot.
+registers the slash commands.
 `/setreaction` also starts a scan of existing messages in the selected channel;
 each bot checks its own reactions and adds any missing ones. On later restarts
 the bots scan the configured channel history again. This requires each bot to
@@ -58,8 +62,14 @@ limits. Settings are separate for each server.
 
 Use `/ai enabled:true` or `/ai enabled:false` to turn Ruta and Xin's AI replies
 on or off for the current server. The setting is saved across restarts and does
-not affect the five bots' automatic reactions. Only user ID
-`766135407590244383` can use this command.
+not affect the five bots' automatic reactions. Only IDs listed in
+`config.json`'s `adminUserIds` can use this command.
+
+Use `/autoreactor enabled:false` to stop all five bots from automatically
+reacting to new messages in the configured channel for this server, or
+`/autoreactor enabled:true` to turn them back on. This setting is saved across
+restarts; when enabled, each bot also checks existing messages on startup or
+after `/setreaction`.
 
 Use `/reply` to choose a channel, paste a message link or ID, select one of the
 five bot accounts, and enter the reply text. Use `/sendmessage` to have all

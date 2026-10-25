@@ -18,7 +18,6 @@ const personality = require("./personality");
 const xinPersonality = require("./xin-personality");
 
 const { DISCORD_CLIENT_ID, GEMINI_API_KEY } = process.env;
-const ADMIN_USER_ID = "766135407590244383";
 const AI_USER_COOLDOWN_MS = 5000;
 const botTokens = [
   process.env.DISCORD_TOKEN,
@@ -63,10 +62,23 @@ function loadSettings() {
   }
 }
 
-const settings = loadSettings();
+const config = loadSettings();
+if (
+  !Array.isArray(config.adminUserIds) ||
+  !config.adminUserIds.every((userId) => typeof userId === "string" && /^\d+$/.test(userId))
+) {
+  throw new Error("config.json must contain an adminUserIds array of Discord user ID strings.");
+}
+const adminUserIds = new Set(config.adminUserIds);
+const settings = Object.fromEntries(
+  Object.entries(config).filter(([key]) => key !== "adminUserIds"),
+);
 
 function saveSettings() {
-  fs.writeFileSync(CONFIG_PATH, `${JSON.stringify(settings, null, 2)}\n`);
+  fs.writeFileSync(
+    CONFIG_PATH,
+    `${JSON.stringify({ adminUserIds: [...adminUserIds], ...settings }, null, 2)}\n`,
+  );
 }
 
 const setReactionCommand = new SlashCommandBuilder()
@@ -139,6 +151,16 @@ const aiCommand = new SlashCommandBuilder()
       .setRequired(true),
   );
 
+const autoreactorCommand = new SlashCommandBuilder()
+  .setName("autoreactor")
+  .setDescription("Turn all five bots' automatic reactions on or off in this server.")
+  .addBooleanOption((option) =>
+    option
+      .setName("enabled")
+      .setDescription("Whether all five bots should automatically react.")
+      .setRequired(true),
+  );
+
 const clients = botTokens.map(
   (_, index) =>
     new Client({
@@ -179,14 +201,19 @@ async function registerCommand(guildId) {
       sendMessageCommand.toJSON(),
       replyCommand.toJSON(),
       aiCommand.toJSON(),
+      autoreactorCommand.toJSON(),
     ],
   });
   console.log(
-    `Registered /setreaction, /sendmessage, /reply, and /ai in server ${guildId}.`,
+    `Registered /setreaction, /sendmessage, /reply, /ai, and /autoreactor in server ${guildId}.`,
   );
 }
 
 async function reactToMessage(message, configuration, client) {
+  if (settings[message.guildId]?.autoreactorEnabled === false) {
+    return false;
+  }
+
   const existingReaction =
     message.reactions.cache.get(configuration.emojiId) ||
     message.reactions.cache.find(
@@ -200,13 +227,21 @@ async function reactToMessage(message, configuration, client) {
     }
   }
 
+  if (settings[message.guildId]?.autoreactorEnabled === false) {
+    return false;
+  }
+
   await message.react(configuration.emojiId);
   return true;
 }
 
 async function backfillConfiguredChannels(client, botNumber) {
   for (const [guildId, configuration] of Object.entries(settings)) {
-    if (!configuration.channelId || !configuration.emojiId) {
+    if (
+      configuration.autoreactorEnabled === false ||
+      !configuration.channelId ||
+      !configuration.emojiId
+    ) {
       continue;
     }
     await backfillChannel(client, guildId, configuration, botNumber);
@@ -214,6 +249,10 @@ async function backfillConfiguredChannels(client, botNumber) {
 }
 
 async function backfillChannel(client, guildId, configuration, botNumber) {
+  if (settings[guildId]?.autoreactorEnabled === false) {
+    return;
+  }
+
   const guild = client.guilds.cache.get(guildId);
   if (!guild) {
     console.error(`Bot ${botNumber} is not in configured server ${guildId}; skipping backfill.`);
@@ -260,8 +299,14 @@ async function backfillChannel(client, guildId, configuration, botNumber) {
   console.log(`Bot ${botNumber} is checking existing messages in channel ${channel.id}.`);
   let before;
   let reactedCount = 0;
+  let stoppedByDisabledAutoreactor = false;
 
   while (true) {
+    if (settings[guildId]?.autoreactorEnabled === false) {
+      stoppedByDisabledAutoreactor = true;
+      break;
+    }
+
     let messages;
     try {
       messages = await channel.messages.fetch({
@@ -281,6 +326,11 @@ async function backfillChannel(client, guildId, configuration, botNumber) {
     }
 
     for (const message of messages.values()) {
+      if (settings[guildId]?.autoreactorEnabled === false) {
+        stoppedByDisabledAutoreactor = true;
+        break;
+      }
+
       try {
         if (await reactToMessage(message, configuration, client)) {
           reactedCount += 1;
@@ -293,12 +343,22 @@ async function backfillChannel(client, guildId, configuration, botNumber) {
       }
     }
 
+    if (stoppedByDisabledAutoreactor) {
+      break;
+    }
+
     before = messages.last().id;
   }
 
-  console.log(
-    `Bot ${botNumber} finished checking channel ${channel.id}; added ${reactedCount} missing reactions.`,
-  );
+  if (stoppedByDisabledAutoreactor) {
+    console.log(
+      `Bot ${botNumber} stopped checking channel ${channel.id} because the autoreactor was disabled; added ${reactedCount} missing reactions.`,
+    );
+  } else {
+    console.log(
+      `Bot ${botNumber} finished checking channel ${channel.id}; added ${reactedCount} missing reactions.`,
+    );
+  }
 }
 
 async function sendAiReply(message, content) {
@@ -463,7 +523,7 @@ primaryClient.on("interactionCreate", async (interaction) => {
     return;
   }
 
-  if (interaction.user.id !== ADMIN_USER_ID) {
+  if (!adminUserIds.has(interaction.user.id)) {
     await interaction.reply({
       content: "You are not authorized to use this bot command.",
       flags: MessageFlags.Ephemeral,
@@ -505,6 +565,48 @@ primaryClient.on("interactionCreate", async (interaction) => {
 
     await interaction.reply({
       content: `Ruta and Xin AI replies are now ${enabled ? "on" : "off"} in this server. Autoreactions are not affected.`,
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+
+  if (interaction.commandName === "autoreactor") {
+    if (!interaction.guild) {
+      await interaction.reply({
+        content: "This command can only be used in a server.",
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
+
+    const enabled = interaction.options.getBoolean("enabled", true);
+    const previousSettings = settings[interaction.guildId];
+    settings[interaction.guildId] = {
+      ...previousSettings,
+      autoreactorEnabled: enabled,
+    };
+
+    try {
+      saveSettings();
+    } catch (error) {
+      if (previousSettings) {
+        settings[interaction.guildId] = previousSettings;
+      } else {
+        delete settings[interaction.guildId];
+      }
+      console.error(
+        `Could not save the autoreactor setting for server ${interaction.guildId}:`,
+        error,
+      );
+      await interaction.reply({
+        content: "I couldn't save the autoreactor setting. Check that I can write config.json.",
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
+
+    await interaction.reply({
+      content: `Automatic reactions are now ${enabled ? "on" : "off"} for all five bots in this server.`,
       flags: MessageFlags.Ephemeral,
     });
     return;
@@ -791,7 +893,10 @@ primaryClient.on("interactionCreate", async (interaction) => {
   }
 
   await interaction.reply({
-    content: `All five bots will react to new messages in <#${channel.id}> with ${emoji.toString()} and are checking its existing message history now.`,
+    content:
+      settings[interaction.guildId].autoreactorEnabled === false
+        ? `The autoreactor is off. The channel <#${channel.id}> is saved; all five bots will react there when you turn it back on.`
+        : `All five bots will react to new messages in <#${channel.id}> with ${emoji.toString()} and are checking its existing message history now.`,
     flags: MessageFlags.Ephemeral,
   });
 

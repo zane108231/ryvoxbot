@@ -1,7 +1,12 @@
 {
+  "adminUserIds": [
+    "766135407590244383",
+    "1514233018284380263"
+  ],
   "1558416950726500415": {
     "channelId": "1558430415851888771",
     "emojiId": "<:haha:1562138869787533372>",
-    "aiEnabled": false
+    "aiEnabled": true,
+    "autoreactorEnabled": true
   }
 }
