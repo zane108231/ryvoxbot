@@ -47,8 +47,8 @@ custom domain in Render if you want that specific address.
 The `adminUserIds` array in `config.json` controls who can use the bot's admin
 slash commands. It currently contains `766135407590244383` and
 `1514233018284380263`; edit this array to change the admins. Both users can use
-`/setreaction`, `/ai`, `/autoreactor`, `/reply`, and `/sendmessage` through the
-primary bot.
+`/setreaction`, `/ai`, `/autoreactor`, `/reply`, `/sendmessage`, and `/sendas`
+through the primary bot.
 Select a text channel with `/setreaction`, and all five bots will use that
 server's custom emoji named `haha`. The emoji must exist in the server, and all
 five bot accounts must be members of that server. Only the primary bot
@@ -65,15 +65,19 @@ on or off for the current server. The setting is saved across restarts and does
 not affect the five bots' automatic reactions. Only IDs listed in
 `config.json`'s `adminUserIds` can use this command.
 
-Use `/autoreactor enabled:false` to stop all five bots from automatically
-reacting to new messages in the configured channel for this server, or
-`/autoreactor enabled:true` to turn them back on. This setting is saved across
+Automatic reactions are off by default, including after a restart, until an
+admin explicitly enables them. Use `/autoreactor enabled:true` to turn on
+automatic reactions for all five bots in this server, or
+`/autoreactor enabled:false` to turn them off. This setting is saved across
 restarts; when enabled, each bot also checks existing messages on startup or
 after `/setreaction`.
 
 Use `/reply` to choose a channel, paste a message link or ID, select one of the
 five bot accounts, and enter the reply text. Use `/sendmessage` to have all
 five bots post the same text in the channel configured with `/setreaction`.
+Use `/sendas` to choose a channel, select Ruta (Bot 1), Bot 2, Bot 3, Bot 4, or
+Xin (Bot 5), and send a custom message as just that bot. The selected bot must
+be online, in the server, and have permission to send messages in the channel.
 Messages are submitted concurrently; Discord.js handles API rate limits.
 Replies and sent messages are posted by the bot accounts, not a human account.
 

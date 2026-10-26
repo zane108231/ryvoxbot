@@ -35,6 +35,13 @@ const gemini =
     ? new GoogleGenAI({ apiKey: geminiApiKey })
     : null;
 const aiUserCooldowns = new Map();
+const botChoices = [
+  { name: "Ruta (Bot 1)", value: 1 },
+  { name: "Bot 2", value: 2 },
+  { name: "Bot 3", value: 3 },
+  { name: "Bot 4", value: 4 },
+  { name: "Xin (Bot 5)", value: 5 },
+];
 
 const missingTokenNumbers = botTokens
   .map((token, index) => (tokenIsConfigured(token) ? null : index + 1))
@@ -103,6 +110,31 @@ const sendMessageCommand = new SlashCommandBuilder()
       .setRequired(true),
   );
 
+const sendAsCommand = new SlashCommandBuilder()
+  .setName("sendas")
+  .setDescription("Send a custom message as one selected bot.")
+  .addChannelOption((option) =>
+    option
+      .setName("channel")
+      .setDescription("The channel where the selected bot should send the message.")
+      .addChannelTypes(ChannelType.GuildText)
+      .setRequired(true),
+  )
+  .addIntegerOption((option) =>
+    option
+      .setName("bot")
+      .setDescription("Which bot account should send the message.")
+      .addChoices(...botChoices)
+      .setRequired(true),
+  )
+  .addStringOption((option) =>
+    option
+      .setName("text")
+      .setDescription("What the selected bot should say.")
+      .setMaxLength(2000)
+      .setRequired(true),
+  );
+
 const replyCommand = new SlashCommandBuilder()
   .setName("reply")
   .setDescription("Reply to a message using one of the five bot accounts.")
@@ -124,13 +156,7 @@ const replyCommand = new SlashCommandBuilder()
     option
       .setName("bot")
       .setDescription("Which bot account should send the reply.")
-      .addChoices(
-        { name: "Bot 1 (primary)", value: 1 },
-        { name: "Bot 2", value: 2 },
-        { name: "Bot 3", value: 3 },
-        { name: "Bot 4", value: 4 },
-        { name: "Bot 5", value: 5 },
-      )
+      .addChoices(...botChoices)
       .setRequired(true),
   )
   .addStringOption((option) =>
@@ -199,18 +225,19 @@ async function registerCommand(guildId) {
     body: [
       setReactionCommand.toJSON(),
       sendMessageCommand.toJSON(),
+      sendAsCommand.toJSON(),
       replyCommand.toJSON(),
       aiCommand.toJSON(),
       autoreactorCommand.toJSON(),
     ],
   });
   console.log(
-    `Registered /setreaction, /sendmessage, /reply, /ai, and /autoreactor in server ${guildId}.`,
+    `Registered /setreaction, /sendmessage, /sendas, /reply, /ai, and /autoreactor in server ${guildId}.`,
   );
 }
 
 async function reactToMessage(message, configuration, client) {
-  if (settings[message.guildId]?.autoreactorEnabled === false) {
+  if (settings[message.guildId]?.autoreactorEnabled !== true) {
     return false;
   }
 
@@ -227,7 +254,7 @@ async function reactToMessage(message, configuration, client) {
     }
   }
 
-  if (settings[message.guildId]?.autoreactorEnabled === false) {
+  if (settings[message.guildId]?.autoreactorEnabled !== true) {
     return false;
   }
 
@@ -238,7 +265,7 @@ async function reactToMessage(message, configuration, client) {
 async function backfillConfiguredChannels(client, botNumber) {
   for (const [guildId, configuration] of Object.entries(settings)) {
     if (
-      configuration.autoreactorEnabled === false ||
+      configuration.autoreactorEnabled !== true ||
       !configuration.channelId ||
       !configuration.emojiId
     ) {
@@ -249,7 +276,7 @@ async function backfillConfiguredChannels(client, botNumber) {
 }
 
 async function backfillChannel(client, guildId, configuration, botNumber) {
-  if (settings[guildId]?.autoreactorEnabled === false) {
+  if (settings[guildId]?.autoreactorEnabled !== true) {
     return;
   }
 
@@ -302,7 +329,7 @@ async function backfillChannel(client, guildId, configuration, botNumber) {
   let stoppedByDisabledAutoreactor = false;
 
   while (true) {
-    if (settings[guildId]?.autoreactorEnabled === false) {
+    if (settings[guildId]?.autoreactorEnabled !== true) {
       stoppedByDisabledAutoreactor = true;
       break;
     }
@@ -326,7 +353,7 @@ async function backfillChannel(client, guildId, configuration, botNumber) {
     }
 
     for (const message of messages.values()) {
-      if (settings[guildId]?.autoreactorEnabled === false) {
+      if (settings[guildId]?.autoreactorEnabled !== true) {
         stoppedByDisabledAutoreactor = true;
         break;
       }
@@ -716,6 +743,78 @@ primaryClient.on("interactionCreate", async (interaction) => {
     return;
   }
 
+  if (interaction.commandName === "sendas") {
+    if (!interaction.guild) {
+      await interaction.reply({
+        content: "This command can only be used in a server.",
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
+
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    const channel = interaction.options.getChannel("channel", true);
+    const botNumber = interaction.options.getInteger("bot", true);
+    const text = interaction.options.getString("text", true);
+    const selectedClient = clients[botNumber - 1];
+
+    if (!selectedClient?.isReady()) {
+      await interaction.editReply(`Bot ${botNumber} is offline, so it could not send the message.`);
+      return;
+    }
+
+    const selectedGuild = selectedClient.guilds.cache.get(interaction.guildId);
+    if (!selectedGuild) {
+      await interaction.editReply(
+        `Bot ${botNumber} is not in this server. Add it to the server before using /sendas.`,
+      );
+      return;
+    }
+
+    try {
+      const targetChannel = await selectedClient.channels.fetch(channel.id);
+      if (
+        !targetChannel ||
+        targetChannel.type !== ChannelType.GuildText ||
+        targetChannel.guildId !== interaction.guildId
+      ) {
+        await interaction.editReply("The selected bot cannot access that text channel.");
+        return;
+      }
+
+      const botMember = selectedGuild.members.me;
+      const permissions = botMember && targetChannel.permissionsFor(botMember);
+      if (
+        !permissions?.has([
+          PermissionFlagsBits.ViewChannel,
+          PermissionFlagsBits.SendMessages,
+        ])
+      ) {
+        await interaction.editReply(
+          `Bot ${botNumber} needs View Channel and Send Messages permissions in <#${channel.id}>.`,
+        );
+        return;
+      }
+
+      await targetChannel.send({
+        content: text,
+        allowedMentions: { parse: [] },
+      });
+      await interaction.editReply(
+        `Your message was sent in <#${channel.id}> as ${selectedClient.user.tag}.`,
+      );
+    } catch (error) {
+      console.error(
+        `Bot ${botNumber} could not send a custom message in channel ${channel.id}:`,
+        error,
+      );
+      await interaction.editReply(
+        `Bot ${botNumber} couldn't send the message because of a Discord or network error. Check the console and its channel permissions.`,
+      );
+    }
+    return;
+  }
+
   if (interaction.commandName === "reply") {
     if (!interaction.guild) {
       await interaction.reply({
@@ -894,7 +993,7 @@ primaryClient.on("interactionCreate", async (interaction) => {
 
   await interaction.reply({
     content:
-      settings[interaction.guildId].autoreactorEnabled === false
+      settings[interaction.guildId].autoreactorEnabled !== true
         ? `The autoreactor is off. The channel <#${channel.id}> is saved; all five bots will react there when you turn it back on.`
         : `All five bots will react to new messages in <#${channel.id}> with ${emoji.toString()} and are checking its existing message history now.`,
     flags: MessageFlags.Ephemeral,
