@@ -10,6 +10,11 @@ const {
   Routes,
   SlashCommandBuilder,
 } = require("discord.js");
+const {
+  entersState,
+  joinVoiceChannel,
+  VoiceConnectionStatus,
+} = require("@discordjs/voice");
 const { GoogleGenAI, ThinkingLevel } = require("@google/genai");
 const fs = require("node:fs");
 const http = require("node:http");
@@ -35,6 +40,7 @@ const gemini =
     ? new GoogleGenAI({ apiKey: geminiApiKey })
     : null;
 const aiUserCooldowns = new Map();
+const observedVoiceConnections = new WeakSet();
 const botChoices = [
   { name: "Ruta (Bot 1)", value: 1 },
   { name: "Bot 2", value: 2 },
@@ -187,12 +193,24 @@ const autoreactorCommand = new SlashCommandBuilder()
       .setRequired(true),
   );
 
+const joinCommand = new SlashCommandBuilder()
+  .setName("join")
+  .setDescription("Make all five bots join a voice channel.")
+  .addChannelOption((option) =>
+    option
+      .setName("channel")
+      .setDescription("The voice channel all five bots should join.")
+      .addChannelTypes(ChannelType.GuildVoice, ChannelType.GuildStageVoice)
+      .setRequired(true),
+  );
+
 const clients = botTokens.map(
   (_, index) =>
     new Client({
       intents: [
         GatewayIntentBits.Guilds,
         GatewayIntentBits.GuildMessages,
+        GatewayIntentBits.GuildVoiceStates,
         ...([0, 4].includes(index) ? [GatewayIntentBits.MessageContent] : []),
       ],
     }),
@@ -229,10 +247,11 @@ async function registerCommand(guildId) {
       replyCommand.toJSON(),
       aiCommand.toJSON(),
       autoreactorCommand.toJSON(),
+      joinCommand.toJSON(),
     ],
   });
   console.log(
-    `Registered /setreaction, /sendmessage, /sendas, /reply, /ai, and /autoreactor in server ${guildId}.`,
+    `Registered /setreaction, /sendmessage, /sendas, /reply, /ai, /autoreactor, and /join in server ${guildId}.`,
   );
 }
 
@@ -241,25 +260,32 @@ async function reactToMessage(message, configuration, client) {
     return false;
   }
 
-  const existingReaction =
-    message.reactions.cache.get(configuration.emojiId) ||
-    message.reactions.cache.find(
-      (r) => r.emoji.toString() === configuration.emojiId,
-    );
+  try {
+    const existingReaction =
+      message.reactions.cache.get(configuration.emojiId) ||
+      message.reactions.cache.find(
+        (r) => r.emoji.toString() === configuration.emojiId,
+      );
 
-  if (existingReaction) {
-    const users = await existingReaction.users.fetch();
-    if (users.has(client.user.id)) {
+    if (existingReaction) {
+      const users = await existingReaction.users.fetch();
+      if (users.has(client.user.id)) {
+        return false;
+      }
+    }
+
+    if (settings[message.guildId]?.autoreactorEnabled !== true) {
       return false;
     }
-  }
 
-  if (settings[message.guildId]?.autoreactorEnabled !== true) {
-    return false;
+    await message.react(configuration.emojiId);
+    return true;
+  } catch (error) {
+    if (error.code === 10008) {
+      return false;
+    }
+    throw error;
   }
-
-  await message.react(configuration.emojiId);
-  return true;
 }
 
 async function backfillConfiguredChannels(client, botNumber) {
@@ -636,6 +662,153 @@ primaryClient.on("interactionCreate", async (interaction) => {
       content: `Automatic reactions are now ${enabled ? "on" : "off"} for all five bots in this server.`,
       flags: MessageFlags.Ephemeral,
     });
+
+    const configuration = settings[interaction.guildId];
+    if (enabled && configuration.channelId && configuration.emojiId) {
+      clients.forEach((client, index) => {
+        if (!client.isReady()) {
+          return;
+        }
+
+        backfillChannel(
+          client,
+          interaction.guildId,
+          configuration,
+          index + 1,
+        ).catch((error) => {
+          console.error(
+            `Bot ${index + 1} could not backfill configured channel ${configuration.channelId}:`,
+            error,
+          );
+        });
+      });
+    }
+
+    return;
+  }
+
+  if (interaction.commandName === "join") {
+    if (!interaction.guild) {
+      await interaction.reply({
+        content: "This command can only be used in a server.",
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
+
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    const channel = interaction.options.getChannel("channel", true);
+    const joinedBots = [];
+    const pendingBots = [];
+    const failedBots = [];
+
+    await Promise.all(
+      clients.map(async (client, index) => {
+        const botNumber = index + 1;
+        const botName = botChoices[index].name;
+        const guild = client.guilds.cache.get(interaction.guildId);
+
+        if (!client.isReady()) {
+          failedBots.push(`${botName}: offline`);
+          return;
+        }
+        if (!guild) {
+          failedBots.push(`${botName}: not in this server`);
+          return;
+        }
+
+        let connection;
+        try {
+          const voiceChannel = await client.channels.fetch(channel.id);
+          if (
+            !voiceChannel ||
+            ![
+              ChannelType.GuildVoice,
+              ChannelType.GuildStageVoice,
+            ].includes(voiceChannel.type) ||
+            voiceChannel.guildId !== interaction.guildId
+          ) {
+            failedBots.push(`${botName}: cannot access that voice channel`);
+            return;
+          }
+
+          const botMember = guild.members.me;
+          const permissions = botMember && voiceChannel.permissionsFor(botMember);
+          if (
+            !permissions?.has([
+              PermissionFlagsBits.ViewChannel,
+              PermissionFlagsBits.Connect,
+            ])
+          ) {
+            failedBots.push(`${botName}: needs View Channel and Connect permissions`);
+            return;
+          }
+
+          connection = joinVoiceChannel({
+            channelId: voiceChannel.id,
+            guildId: interaction.guildId,
+            adapterCreator: guild.voiceAdapterCreator,
+            group: `bot-${botNumber}`,
+            selfDeaf: true,
+            selfMute: true,
+          });
+          if (!observedVoiceConnections.has(connection)) {
+            observedVoiceConnections.add(connection);
+            connection.on("error", (error) => {
+              console.error(
+                `${botName} voice connection error in channel ${connection.joinConfig.channelId}:`,
+                error,
+              );
+            });
+            connection.on("stateChange", (_, newState) => {
+              console.log(
+                `${botName} voice connection in channel ${connection.joinConfig.channelId} changed to ${newState.status}.`,
+              );
+            });
+          }
+
+          try {
+            await entersState(connection, VoiceConnectionStatus.Ready, 30_000);
+            joinedBots.push(botName);
+          } catch (error) {
+            if (error.name !== "AbortError") {
+              throw error;
+            }
+
+            const isInChannel = botMember.voice.channelId === voiceChannel.id;
+            pendingBots.push(
+              isInChannel
+                ? `${botName} joined; voice transport is still ${connection.state.status}`
+                : `${botName} has not confirmed joining; connection is ${connection.state.status}`,
+            );
+            console.warn(
+              `${botName} did not reach ready state for voice channel ${channel.id} within 30 seconds; member voice channel is ${botMember.voice.channelId ?? "unknown"} and connection state is ${connection.state.status}. Keeping the connection alive.`,
+            );
+          }
+        } catch (error) {
+          connection?.destroy();
+          console.error(
+            `${botName} could not join voice channel ${channel.id} in server ${interaction.guildId}:`,
+            error,
+          );
+          failedBots.push(`${botName}: failed to join (see bot logs)`);
+        }
+      }),
+    );
+
+    const resultLines = [];
+    if (joinedBots.length > 0) {
+      resultLines.push(`Joined <#${channel.id}>: ${joinedBots.join(", ")}.`);
+    }
+    if (pendingBots.length > 0) {
+      resultLines.push(
+        `Still connecting (kept in the channel): ${pendingBots.join("; ")}.`,
+      );
+    }
+    if (failedBots.length > 0) {
+      resultLines.push(`Could not join: ${failedBots.join("; ")}.`);
+    }
+    await interaction.editReply(resultLines.join("\n"));
     return;
   }
 
@@ -1019,6 +1192,8 @@ clients.forEach((client, index) => {
   client.once("clientReady", async (readyClient) => {
     console.log(`Bot ${index + 1} logged in as ${readyClient.user.tag}.`);
 
+    await backfillConfiguredChannels(readyClient, index + 1);
+
     if (index === 0) {
       for (const guild of readyClient.guilds.cache.values()) {
         try {
@@ -1028,8 +1203,6 @@ clients.forEach((client, index) => {
         }
       }
     }
-
-    await backfillConfiguredChannels(readyClient, index + 1);
   });
 
   client.on("messageCreate", async (message) => {

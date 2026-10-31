@@ -7,7 +7,7 @@ restarting the bots.
 
 ## Setup
 
-1. Install Node.js 20 or newer.
+1. Install Node.js 22.13 or newer.
 2. Create a Discord application and bot in the Discord Developer Portal.
 3. Put all five bot tokens and the primary bot's application ID in `.env`:
 
@@ -23,8 +23,10 @@ restarting the bots.
 
 4. Invite all five bots to each server where they should react. Give each bot
    View Channel, Read Message History, Add Reactions, and Send Messages in the
-   target channel. The primary bot also needs the `applications.commands`
-   scope; only it registers slash commands. In the Discord Developer Portal,
+   configured text channel. To use `/join`, give each bot View Channel and
+   Connect permissions in the chosen voice channel. The primary bot also needs
+   the `applications.commands` scope; only it registers slash commands. In the
+   Discord Developer Portal,
    enable the **Message Content Intent** for Bot 1 and Bot 5: Bot 1 handles
    `.rr` and direct Ruta mentions, while Bot 5 handles direct Xin mentions.
    Bots 2–4 do not need that privileged intent. No bot needs the Server
@@ -47,8 +49,8 @@ custom domain in Render if you want that specific address.
 The `adminUserIds` array in `config.json` controls who can use the bot's admin
 slash commands. It currently contains `766135407590244383` and
 `1514233018284380263`; edit this array to change the admins. Both users can use
-`/setreaction`, `/ai`, `/autoreactor`, `/reply`, `/sendmessage`, and `/sendas`
-through the primary bot.
+`/setreaction`, `/ai`, `/autoreactor`, `/join`, `/reply`, `/sendmessage`, and
+`/sendas` through the primary bot.
 Select a text channel with `/setreaction`, and all five bots will use that
 server's custom emoji named `haha`. The emoji must exist in the server, and all
 five bot accounts must be members of that server. Only the primary bot
@@ -69,8 +71,15 @@ Automatic reactions are off by default, including after a restart, until an
 admin explicitly enables them. Use `/autoreactor enabled:true` to turn on
 automatic reactions for all five bots in this server, or
 `/autoreactor enabled:false` to turn them off. This setting is saved across
-restarts; when enabled, each bot also checks existing messages on startup or
-after `/setreaction`.
+restarts. On startup and whenever it is enabled, each bot catches up on existing
+messages in the configured channel; `/setreaction` also starts a history scan.
+
+Use `/join` and select a voice channel to make all five bots join it. Each bot
+must be online, in the server, and have View Channel and Connect permissions
+for that voice channel. They join muted and deafened. If Discord shows a bot in
+the channel but `/join` reports that it is still connecting, allow outbound UDP
+traffic from the machine running the bot; Administrator permissions do not
+override host network or firewall restrictions.
 
 Use `/reply` to choose a channel, paste a message link or ID, select one of the
 five bot accounts, and enter the reply text. Use `/sendmessage` to have all
