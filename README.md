@@ -46,11 +46,14 @@ custom domain in Render if you want that specific address.
 
 ## Configure a server
 
-The `adminUserIds` array in `config.json` controls who can use the bot's admin
-slash commands. It currently contains `766135407590244383` and
-`1514233018284380263`; edit this array to change the admins. Both users can use
-`/setreaction`, `/ai`, `/autoreactor`, `/join`, `/reply`, `/sendmessage`, and
-`/sendas` through the primary bot.
+Developer ID `766135407590244383` can use all slash commands. ID
+`1514233018284380263` can use only `/ai` and `/autoreactor`. All other users are
+denied by the bot, even if they can see a command in Discord.
+`/setreaction`, `/reactioncleanup`, `/addreactionuser`, `/adduid`, `/removeuid`,
+and `/listuids` are disabled for regular members by default in Discord command
+permissions. Discord may still show disabled commands to server
+administrators; the bot's ID check still blocks everyone except the developer
+from running them.
 Select a text channel with `/setreaction`, and all five bots will use that
 server's custom emoji named `haha`. The emoji must exist in the server, and all
 five bot accounts must be members of that server. Only the primary bot
@@ -64,8 +67,8 @@ limits. Settings are separate for each server.
 
 Use `/ai enabled:true` or `/ai enabled:false` to turn Ruta and Xin's AI replies
 on or off for the current server. The setting is saved across restarts and does
-not affect the five bots' automatic reactions. Only IDs listed in
-`config.json`'s `adminUserIds` can use this command.
+not affect the five bots' automatic reactions. The developer and the limited
+admin can use this command.
 
 Automatic reactions are off by default, including after a restart, until an
 admin explicitly enables them. Use `/autoreactor enabled:true` to turn on
@@ -74,12 +77,36 @@ automatic reactions for all five bots in this server, or
 restarts. On startup and whenever it is enabled, each bot catches up on existing
 messages in the configured channel; `/setreaction` also starts a history scan.
 
+Reaction cleanup is globally off by default. The developer can use
+`/reactioncleanup enabled:true` to remove reactions from the eight hardcoded
+user IDs in `src/index.js` and any additional IDs added with
+`/addreactionuser user_id:<ID>` or `/adduid`. Use `/adduid` and select up to 24
+Discord users in one command to add them together; already-tracked users are
+skipped. Use `/removeuid user_id:<ID>` to remove an additional ID; the eight
+hardcoded IDs cannot be removed with that command. Use `/listuids` to privately
+view the IDs and their usernames when Discord can resolve them. Adding users
+while cleanup is enabled starts a scan for their existing reactions. Enabling
+cleanup scans each server's configured
+`/setreaction` channel history and removes matching reactions from new messages
+as soon as the primary bot receives Discord's reaction event; Discord/API
+latency means a reaction may be visible briefly before removal. Use
+`/reactioncleanup enabled:false` to disable it globally.
+The primary bot needs View Channel, Read Message History, and Manage Messages
+permissions in each channel. Slash command responses are private to the admin
+who invoked them.
+
 Use `/join` and select a voice channel to make all five bots join it. Each bot
 must be online, in the server, and have View Channel and Connect permissions
 for that voice channel. They join muted and deafened. If Discord shows a bot in
 the channel but `/join` reports that it is still connecting, allow outbound UDP
 traffic from the machine running the bot; Administrator permissions do not
 override host network or firewall restrictions.
+Use developer-only `/botvoice` with `action:mute`, `unmute`, `deafen`, or
+`undeafen` to change the self-mute or self-deafen state for all bots currently
+connected in that server. Use `/playsound` and select one of the server's
+soundboard sounds to play it in Ruta's voice channel; Ruta must have joined a
+regular voice channel and have the Use Soundboard permission there. Soundboard
+playback is sent once by Ruta, so everyone in the channel hears one copy.
 
 Use `/reply` to choose a channel, paste a message link or ID, select one of the
 five bot accounts, and enter the reply text. Use `/sendmessage` to have all

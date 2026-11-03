@@ -5,6 +5,7 @@ const {
   Client,
   GatewayIntentBits,
   MessageFlags,
+  Partials,
   PermissionFlagsBits,
   REST,
   Routes,
@@ -12,6 +13,7 @@ const {
 } = require("discord.js");
 const {
   entersState,
+  getVoiceConnection,
   joinVoiceChannel,
   VoiceConnectionStatus,
 } = require("@discordjs/voice");
@@ -24,6 +26,19 @@ const xinPersonality = require("./xin-personality");
 
 const { DISCORD_CLIENT_ID, GEMINI_API_KEY } = process.env;
 const AI_USER_COOLDOWN_MS = 5000;
+const DEVELOPER_USER_ID = "766135407590244383";
+const LIMITED_ADMIN_USER_ID = "1514233018284380263";
+const LIMITED_ADMIN_COMMANDS = new Set(["ai", "autoreactor"]);
+const HARDCODED_REACTION_CLEANUP_USER_IDS = new Set([
+  "1440726415229325413",
+  "1442844979558088805",
+  "1528054997646970930",
+  "1539237818533019703",
+  "1451960695406067795",
+  "1498809601263407166",
+  "1564216124848218145",
+  "1452602497955795085",
+]);
 const botTokens = [
   process.env.DISCORD_TOKEN,
   process.env.DISCORD_TOKEN_2,
@@ -41,6 +56,8 @@ const gemini =
     : null;
 const aiUserCooldowns = new Map();
 const observedVoiceConnections = new WeakSet();
+let reactionCleanupScanPromise;
+let reactionCleanupScanRequested = false;
 const botChoices = [
   { name: "Ruta (Bot 1)", value: 1 },
   { name: "Bot 2", value: 2 },
@@ -77,26 +94,53 @@ function loadSettings() {
 
 const config = loadSettings();
 if (
-  !Array.isArray(config.adminUserIds) ||
-  !config.adminUserIds.every((userId) => typeof userId === "string" && /^\d+$/.test(userId))
+  config.reactionCleanupUserIds !== undefined &&
+  (!Array.isArray(config.reactionCleanupUserIds) ||
+    !config.reactionCleanupUserIds.every(
+      (userId) => typeof userId === "string" && /^\d{17,20}$/.test(userId),
+    ))
 ) {
-  throw new Error("config.json must contain an adminUserIds array of Discord user ID strings.");
+  throw new Error("config.json reactionCleanupUserIds must be an array of Discord user ID strings.");
 }
-const adminUserIds = new Set(config.adminUserIds);
+const additionalReactionCleanupUserIds = new Set(config.reactionCleanupUserIds ?? []);
+let reactionCleanupEnabled = config.reactionCleanupEnabled === true;
 const settings = Object.fromEntries(
-  Object.entries(config).filter(([key]) => key !== "adminUserIds"),
+  Object.entries(config).filter(
+    ([key]) =>
+      ![
+        "adminUserIds",
+        "reactionCleanupEnabled",
+        "reactionCleanupUserIds",
+      ].includes(key),
+  ),
 );
 
 function saveSettings() {
   fs.writeFileSync(
     CONFIG_PATH,
-    `${JSON.stringify({ adminUserIds: [...adminUserIds], ...settings }, null, 2)}\n`,
+    `${JSON.stringify(
+      {
+        reactionCleanupEnabled,
+        reactionCleanupUserIds: [...additionalReactionCleanupUserIds],
+        ...settings,
+      },
+      null,
+      2,
+    )}\n`,
+  );
+}
+
+function isReactionCleanupUserId(userId) {
+  return (
+    HARDCODED_REACTION_CLEANUP_USER_IDS.has(userId) ||
+    additionalReactionCleanupUserIds.has(userId)
   );
 }
 
 const setReactionCommand = new SlashCommandBuilder()
   .setName("setreaction")
   .setDescription("Choose the channel to react to with the server's :haha: emoji.")
+  .setDefaultMemberPermissions(0n)
   .addChannelOption((option) =>
     option
       .setName("channel")
@@ -204,6 +248,90 @@ const joinCommand = new SlashCommandBuilder()
       .setRequired(true),
   );
 
+const botVoiceCommand = new SlashCommandBuilder()
+  .setName("botvoice")
+  .setDescription("Change the five bots' voice mute or deaf state.")
+  .setDefaultMemberPermissions(0n)
+  .addStringOption((option) =>
+    option
+      .setName("action")
+      .setDescription("Choose how to change the bots' voice state.")
+      .addChoices(
+        { name: "Mute all bots", value: "mute" },
+        { name: "Unmute all bots", value: "unmute" },
+        { name: "Deafen all bots", value: "deafen" },
+        { name: "Undeafen all bots", value: "undeafen" },
+      )
+      .setRequired(true),
+  );
+
+const playSoundCommand = new SlashCommandBuilder()
+  .setName("playsound")
+  .setDescription("Play one of this server's soundboard sounds in the voice channel.")
+  .setDefaultMemberPermissions(0n)
+  .addStringOption((option) =>
+    option
+      .setName("sound")
+      .setDescription("Choose a soundboard sound.")
+      .setAutocomplete(true)
+      .setRequired(true),
+  );
+
+const reactionCleanupCommand = new SlashCommandBuilder()
+  .setName("rc")
+  .setDescription("ruut")
+  .setDefaultMemberPermissions(0n)
+  .addBooleanOption((option) =>
+    option
+      .setName("enabled")
+      .setDescription("Whether reaction cleanup should run globally.")
+      .setRequired(true),
+  );
+
+const addReactionCleanupUserCommand = new SlashCommandBuilder()
+  .setName("adru")
+  .setDescription("Add User")
+  .setDefaultMemberPermissions(0n)
+  .addStringOption((option) =>
+    option
+      .setName("user_id")
+      .setDescription("The Discord user ID to add.")
+      .setMinLength(17)
+      .setMaxLength(20)
+      .setRequired(true),
+  );
+
+const addReactionUsersCommand = new SlashCommandBuilder()
+  .setName("addu")
+  .setDescription("Add User");
+for (let userOption = 1; userOption <= 24; userOption += 1) {
+  addReactionUsersCommand.addUserOption((option) =>
+    option
+      .setName(`user${userOption}`)
+      .setDescription(`User ${userOption} to add to reaction cleanup.`)
+      .setRequired(userOption === 1),
+  );
+}
+addReactionUsersCommand.setDefaultMemberPermissions(0n);
+
+const removeReactionCleanupUserCommand = new SlashCommandBuilder()
+  .setName("rv")
+  .setDescription("remove")
+  .setDefaultMemberPermissions(0n)
+  .addStringOption((option) =>
+    option
+      .setName("user_id")
+      .setDescription("The Discord user ID to remove.")
+      .setMinLength(17)
+      .setMaxLength(20)
+      .setRequired(true),
+  );
+
+const listReactionCleanupUsersCommand = new SlashCommandBuilder()
+  .setName("listuids")
+  .setDescription("List hardcoded and additional reaction cleanup users.")
+  .setDefaultMemberPermissions(0n);
+
 const clients = botTokens.map(
   (_, index) =>
     new Client({
@@ -211,8 +339,19 @@ const clients = botTokens.map(
         GatewayIntentBits.Guilds,
         GatewayIntentBits.GuildMessages,
         GatewayIntentBits.GuildVoiceStates,
+        ...(index === 0 ? [GatewayIntentBits.GuildMessageReactions] : []),
         ...([0, 4].includes(index) ? [GatewayIntentBits.MessageContent] : []),
       ],
+      ...(index === 0
+        ? {
+            partials: [
+              Partials.Channel,
+              Partials.Message,
+              Partials.Reaction,
+              Partials.User,
+            ],
+          }
+        : {}),
     }),
 );
 const httpServer = http.createServer((request, response) => {
@@ -248,10 +387,17 @@ async function registerCommand(guildId) {
       aiCommand.toJSON(),
       autoreactorCommand.toJSON(),
       joinCommand.toJSON(),
+      botVoiceCommand.toJSON(),
+      playSoundCommand.toJSON(),
+      reactionCleanupCommand.toJSON(),
+      addReactionCleanupUserCommand.toJSON(),
+      addReactionUsersCommand.toJSON(),
+      removeReactionCleanupUserCommand.toJSON(),
+      listReactionCleanupUsersCommand.toJSON(),
     ],
   });
   console.log(
-    `Registered /setreaction, /sendmessage, /sendas, /reply, /ai, /autoreactor, and /join in server ${guildId}.`,
+    `Registered /setreaction, /sendmessage, /sendas, /reply, /ai, /autoreactor, /join, /botvoice, /playsound, /rc, /adru, /addu, /rv, and /listuids in server ${guildId}.`,
   );
 }
 
@@ -414,6 +560,205 @@ async function backfillChannel(client, guildId, configuration, botNumber) {
   }
 }
 
+function shouldCleanReactionInMessage(message, guildId) {
+  return (
+    reactionCleanupEnabled &&
+    settings[guildId]?.channelId === message.channelId
+  );
+}
+
+function getConfiguredGuildIdForChannel(channelId) {
+  return Object.entries(settings).find(
+    ([, configuration]) => configuration.channelId === channelId,
+  )?.[0];
+}
+
+async function removeTrackedReactionsFromMessage(message, guildId) {
+  if (!shouldCleanReactionInMessage(message, guildId)) {
+    return 0;
+  }
+
+  let removedCount = 0;
+
+  for (const reaction of message.reactions.cache.values()) {
+    let after;
+
+    while (shouldCleanReactionInMessage(message, guildId)) {
+      let users;
+      try {
+        users = await reaction.users.fetch({
+          limit: 100,
+          ...(after ? { after } : {}),
+        });
+      } catch (error) {
+        if (error.code === 10008 || error.code === 10014) {
+          return removedCount;
+        }
+        throw error;
+      }
+
+      if (users.size === 0) {
+        break;
+      }
+
+      for (const user of users.values()) {
+        if (!isReactionCleanupUserId(user.id) || !shouldCleanReactionInMessage(message, guildId)) {
+          continue;
+        }
+
+        try {
+          await reaction.users.remove(user.id);
+          removedCount += 1;
+        } catch (error) {
+          if (error.code !== 10008 && error.code !== 10014) {
+            throw error;
+          }
+        }
+      }
+
+      if (users.size < 100) {
+        break;
+      }
+      after = users.lastKey();
+      if (!after) {
+        break;
+      }
+    }
+  }
+
+  return removedCount;
+}
+
+async function backfillReactionCleanup() {
+  if (!reactionCleanupEnabled) {
+    return;
+  }
+
+  for (const [guildId, configuration] of Object.entries(settings)) {
+    if (!reactionCleanupEnabled) {
+      return;
+    }
+    if (!configuration.channelId) {
+      continue;
+    }
+
+    const guild = primaryClient.guilds.cache.get(guildId);
+    if (!guild) {
+      console.error(
+        `Reaction cleanup cannot scan server ${guildId}; the primary bot is not in that server.`,
+      );
+      continue;
+    }
+
+    let channel;
+    try {
+      channel = await primaryClient.channels.fetch(configuration.channelId);
+    } catch (error) {
+      console.error(
+        `Reaction cleanup could not fetch channel ${configuration.channelId} in server ${guildId}:`,
+        error,
+      );
+      continue;
+    }
+
+    if (
+      !channel ||
+      channel.type !== ChannelType.GuildText ||
+      channel.guildId !== guildId
+    ) {
+      console.error(
+        `Reaction cleanup cannot scan channel ${configuration.channelId}; it is unavailable or not a text channel in server ${guildId}.`,
+      );
+      continue;
+    }
+
+    const botMember = guild.members.me;
+    const permissions = botMember && channel.permissionsFor(botMember);
+    if (
+      !permissions?.has([
+        PermissionFlagsBits.ViewChannel,
+        PermissionFlagsBits.ReadMessageHistory,
+        PermissionFlagsBits.ManageMessages,
+      ])
+    ) {
+      console.error(
+        `Reaction cleanup cannot scan channel ${channel.id}; the primary bot needs View Channel, Read Message History, and Manage Messages.`,
+      );
+      continue;
+    }
+
+    console.log(`Reaction cleanup is scanning channel ${channel.id} in server ${guildId}.`);
+    let before;
+    let removedCount = 0;
+
+    while (reactionCleanupEnabled) {
+      let messages;
+      try {
+        messages = await channel.messages.fetch({
+          limit: 100,
+          ...(before ? { before } : {}),
+        });
+      } catch (error) {
+        console.error(
+          `Reaction cleanup could not fetch history in channel ${channel.id}:`,
+          error,
+        );
+        break;
+      }
+
+      if (messages.size === 0) {
+        break;
+      }
+
+      for (const message of messages.values()) {
+        if (!reactionCleanupEnabled) {
+          break;
+        }
+        try {
+          removedCount += await removeTrackedReactionsFromMessage(message, guildId);
+        } catch (error) {
+          console.error(
+            `Reaction cleanup could not process message ${message.id} in channel ${channel.id}:`,
+            error,
+          );
+        }
+      }
+
+      before = messages.last().id;
+    }
+
+    console.log(
+      `Reaction cleanup finished scanning channel ${channel.id}; removed ${removedCount} tracked reactions.`,
+    );
+  }
+}
+
+function startReactionCleanupScan() {
+  if (!reactionCleanupEnabled) {
+    return;
+  }
+  if (reactionCleanupScanPromise) {
+    reactionCleanupScanRequested = true;
+    return;
+  }
+
+  reactionCleanupScanPromise = (async () => {
+    do {
+      reactionCleanupScanRequested = false;
+      await backfillReactionCleanup();
+    } while (reactionCleanupEnabled && reactionCleanupScanRequested);
+  })()
+    .catch((error) => {
+      console.error("Global reaction cleanup history scan failed:", error);
+    })
+    .finally(() => {
+      reactionCleanupScanPromise = undefined;
+      if (reactionCleanupEnabled && reactionCleanupScanRequested) {
+        startReactionCleanupScan();
+      }
+    });
+}
+
 async function sendAiReply(message, content) {
   try {
     await message.reply({
@@ -572,15 +917,284 @@ primaryClient.on("guildCreate", async (guild) => {
 });
 
 primaryClient.on("interactionCreate", async (interaction) => {
+  if (interaction.isAutocomplete()) {
+    if (
+      interaction.commandName !== "playsound" ||
+      interaction.user.id !== DEVELOPER_USER_ID ||
+      !interaction.guild
+    ) {
+      await interaction.respond([]);
+      return;
+    }
+
+    try {
+      const focusedValue = interaction.options.getFocused().toLocaleLowerCase();
+      const sounds = await interaction.guild.soundboardSounds.fetch();
+      await interaction.respond(
+        sounds
+          .filter(
+            (sound) =>
+              sound.available &&
+              sound.name.toLocaleLowerCase().includes(focusedValue),
+          )
+          .first(25)
+          .map((sound) => ({
+            name: sound.name,
+            value: sound.soundId,
+          })),
+      );
+    } catch (error) {
+      console.error(
+        `Could not load soundboard sounds for autocomplete in server ${interaction.guildId}:`,
+        error,
+      );
+      await interaction.respond([]);
+    }
+    return;
+  }
+
   if (!interaction.isChatInputCommand()) {
     return;
   }
 
-  if (!adminUserIds.has(interaction.user.id)) {
+  const isDeveloper = interaction.user.id === DEVELOPER_USER_ID;
+  const isLimitedAdminCommand =
+    interaction.user.id === LIMITED_ADMIN_USER_ID &&
+    LIMITED_ADMIN_COMMANDS.has(interaction.commandName);
+  if (!isDeveloper && !isLimitedAdminCommand) {
     await interaction.reply({
       content: "You are not authorized to use this bot command.",
       flags: MessageFlags.Ephemeral,
     });
+    return;
+  }
+
+  if (interaction.commandName === "rc") {
+    const enabled = interaction.options.getBoolean("enabled", true);
+    const previousValue = reactionCleanupEnabled;
+    reactionCleanupEnabled = enabled;
+
+    try {
+      saveSettings();
+    } catch (error) {
+      reactionCleanupEnabled = previousValue;
+      console.error("Could not save the global reaction cleanup setting:", error);
+      await interaction.reply({
+        content: "I couldn't save the reaction cleanup setting. Check that I can write config.json.",
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
+
+    await interaction.reply({
+      content: enabled
+        ? "Global reaction cleanup is on. I’m scanning configured reaction channels for tracked users’ existing reactions."
+        : "Global reaction cleanup is off. Any active history scans will stop.",
+      flags: MessageFlags.Ephemeral,
+    });
+
+    if (enabled) {
+      startReactionCleanupScan();
+    }
+    return;
+  }
+
+  if (interaction.commandName === "adru") {
+    const userId = interaction.options.getString("user_id", true).trim();
+    if (!/^\d{17,20}$/.test(userId)) {
+      await interaction.reply({
+        content: "Enter a valid Discord user ID containing 17–20 digits.",
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
+
+    if (isReactionCleanupUserId(userId)) {
+      await interaction.reply({
+        content: "That user ID is already on the reaction cleanup list.",
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
+
+    additionalReactionCleanupUserIds.add(userId);
+    try {
+      saveSettings();
+    } catch (error) {
+      additionalReactionCleanupUserIds.delete(userId);
+      console.error(`Could not save reaction cleanup user ID ${userId}:`, error);
+      await interaction.reply({
+        content: "I couldn't save that user ID. Check that I can write config.json.",
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
+
+    await interaction.reply({
+      content: reactionCleanupEnabled
+        ? `Added user ID ${userId} to the cleanup list. Scanning existing reactions now.`
+        : `Added user ID ${userId} to the cleanup list. It will be processed when global cleanup is enabled.`,
+      flags: MessageFlags.Ephemeral,
+    });
+
+    if (reactionCleanupEnabled) {
+      startReactionCleanupScan();
+    }
+    return;
+  }
+
+  if (interaction.commandName === "addu") {
+    const userIds = new Set();
+    for (let userOption = 1; userOption <= 24; userOption += 1) {
+      const user = interaction.options.getUser(`user${userOption}`);
+      if (user) {
+        userIds.add(user.id);
+      }
+    }
+
+    const addedUserIds = [...userIds].filter(
+      (userId) => !isReactionCleanupUserId(userId),
+    );
+    if (addedUserIds.length === 0) {
+      await interaction.reply({
+        content: "All selected users are already on the reaction cleanup list.",
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
+
+    for (const userId of addedUserIds) {
+      additionalReactionCleanupUserIds.add(userId);
+    }
+
+    try {
+      saveSettings();
+    } catch (error) {
+      for (const userId of addedUserIds) {
+        additionalReactionCleanupUserIds.delete(userId);
+      }
+      console.error("Could not save the selected reaction cleanup user IDs:", error);
+      await interaction.reply({
+        content: "I couldn't save the selected users. Check that I can write config.json.",
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
+
+    const skippedCount = userIds.size - addedUserIds.length;
+    await interaction.reply({
+      content: `Added ${addedUserIds.length} user${addedUserIds.length === 1 ? "" : "s"} to the reaction cleanup list.${skippedCount ? ` ${skippedCount} already listed.` : ""}${reactionCleanupEnabled ? " Scanning existing reactions now." : " They will be processed when global cleanup is enabled."}`,
+      flags: MessageFlags.Ephemeral,
+    });
+
+    if (reactionCleanupEnabled) {
+      startReactionCleanupScan();
+    }
+    return;
+  }
+
+  if (interaction.commandName === "rv") {
+    const userId = interaction.options.getString("user_id", true).trim();
+    if (!/^\d{17,20}$/.test(userId)) {
+      await interaction.reply({
+        content: "Enter a valid Discord user ID containing 17–20 digits.",
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
+
+    if (HARDCODED_REACTION_CLEANUP_USER_IDS.has(userId)) {
+      await interaction.reply({
+        content: "That ID is hardcoded and cannot be removed with /rv.",
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
+
+    if (!additionalReactionCleanupUserIds.delete(userId)) {
+      await interaction.reply({
+        content: "That ID is not in the additional reaction cleanup list.",
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
+
+    try {
+      saveSettings();
+    } catch (error) {
+      additionalReactionCleanupUserIds.add(userId);
+      console.error(`Could not save removal of reaction cleanup user ID ${userId}:`, error);
+      await interaction.reply({
+        content: "I couldn't save that change. Check that I can write config.json.",
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
+
+    await interaction.reply({
+      content: `Removed user ID ${userId} from the additional reaction cleanup list.`,
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+
+  if (interaction.commandName === "listuids") {
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    const userIds = [
+      ...new Set([
+        ...HARDCODED_REACTION_CLEANUP_USER_IDS,
+        ...additionalReactionCleanupUserIds,
+      ]),
+    ].sort();
+    const lines = [];
+
+    for (const userId of userIds) {
+      let user;
+      try {
+        user = await primaryClient.users.fetch(userId);
+      } catch (error) {
+        if (error.code !== 10013) {
+          console.error(`Could not fetch user ${userId} for /listuids:`, error);
+        }
+      }
+
+      const name = user
+        ? `${user.globalName ?? user.username} (@${user.username})`
+        : "Unknown or unavailable user";
+      const source = HARDCODED_REACTION_CLEANUP_USER_IDS.has(userId)
+        ? "hardcoded"
+        : "added";
+      lines.push(`${name} — ${userId} [${source}]`);
+    }
+
+    const responseLines =
+      lines.length > 0
+        ? lines
+        : ["No reaction cleanup user IDs are configured."];
+    const chunks = [];
+    let chunk = "";
+    for (const line of responseLines) {
+      if (chunk && chunk.length + line.length + 1 > 1900) {
+        chunks.push(chunk);
+        chunk = "";
+      }
+      chunk = chunk ? `${chunk}\n${line}` : line;
+    }
+    if (chunk) {
+      chunks.push(chunk);
+    }
+
+    await interaction.editReply({
+      content: chunks[0],
+      allowedMentions: { parse: [] },
+    });
+    for (const nextChunk of chunks.slice(1)) {
+      await interaction.followUp({
+        content: nextChunk,
+        flags: MessageFlags.Ephemeral,
+        allowedMentions: { parse: [] },
+      });
+    }
     return;
   }
 
@@ -809,6 +1423,139 @@ primaryClient.on("interactionCreate", async (interaction) => {
       resultLines.push(`Could not join: ${failedBots.join("; ")}.`);
     }
     await interaction.editReply(resultLines.join("\n"));
+    return;
+  }
+
+  if (interaction.commandName === "botvoice") {
+    if (!interaction.guild) {
+      await interaction.reply({
+        content: "This command can only be used in a server.",
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
+
+    const action = interaction.options.getString("action", true);
+    const isMuteAction = action === "mute" || action === "unmute";
+    const property = isMuteAction ? "selfMute" : "selfDeaf";
+    const targetValue = action === "mute" || action === "deafen";
+    const updatedBots = [];
+    const unchangedBots = [];
+    const unavailableBots = [];
+
+    for (let index = 0; index < clients.length; index += 1) {
+      const botName = botChoices[index].name;
+      const connection = getVoiceConnection(
+        interaction.guildId,
+        `bot-${index + 1}`,
+      );
+
+      if (!connection || connection.state.status === VoiceConnectionStatus.Destroyed) {
+        unavailableBots.push(botName);
+        continue;
+      }
+
+      if (connection.joinConfig[property] === targetValue) {
+        unchangedBots.push(botName);
+        continue;
+      }
+
+      if (
+        connection.rejoin({
+          selfMute: isMuteAction
+            ? targetValue
+            : connection.joinConfig.selfMute,
+          selfDeaf: isMuteAction
+            ? connection.joinConfig.selfDeaf
+            : targetValue,
+        })
+      ) {
+        updatedBots.push(botName);
+      } else {
+        unavailableBots.push(botName);
+      }
+    }
+
+    const lines = [];
+    if (updatedBots.length > 0) {
+      lines.push(
+        `Requested ${action} for: ${updatedBots.join(", ")}. Discord may take a moment to update their voice states.`,
+      );
+    }
+    if (unchangedBots.length > 0) {
+      lines.push(`Already set: ${unchangedBots.join(", ")}.`);
+    }
+    if (unavailableBots.length > 0) {
+      lines.push(`Not connected or could not update: ${unavailableBots.join(", ")}.`);
+    }
+    if (lines.length === 0) {
+      lines.push("No bot voice connections are active in this server.");
+    }
+
+    await interaction.reply({
+      content: lines.join("\n"),
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+
+  if (interaction.commandName === "playsound") {
+    if (!interaction.guild) {
+      await interaction.reply({
+        content: "This command can only be used in a server.",
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
+
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    const soundId = interaction.options.getString("sound", true);
+    const connection = getVoiceConnection(interaction.guildId, "bot-1");
+    if (!connection || connection.state.status === VoiceConnectionStatus.Destroyed) {
+      await interaction.editReply("Ruta needs to join a voice channel with /join first.");
+      return;
+    }
+
+    try {
+      const channel = await primaryClient.channels.fetch(
+        connection.joinConfig.channelId,
+      );
+      if (!channel || channel.type !== ChannelType.GuildVoice) {
+        await interaction.editReply(
+          "Ruta must be connected to a regular voice channel to play a soundboard sound.",
+        );
+        return;
+      }
+
+      const botMember = interaction.guild.members.me;
+      const permissions = botMember && channel.permissionsFor(botMember);
+      if (!permissions?.has(PermissionFlagsBits.UseSoundboard)) {
+        await interaction.editReply(
+          "Ruta needs the Use Soundboard permission in its voice channel.",
+        );
+        return;
+      }
+
+      const sounds = await interaction.guild.soundboardSounds.fetch();
+      const sound = sounds.get(soundId);
+      if (!sound?.available) {
+        await interaction.editReply(
+          "That sound is unavailable or is no longer in this server's soundboard.",
+        );
+        return;
+      }
+
+      await channel.sendSoundboardSound(sound);
+      await interaction.editReply(`Played "${sound.name}" in <#${channel.id}>.`);
+    } catch (error) {
+      console.error(
+        `Could not play soundboard sound ${soundId} in server ${interaction.guildId}:`,
+        error,
+      );
+      await interaction.editReply(
+        "I couldn't play that sound. Check Ruta's voice connection, soundboard permission, and the bot logs.",
+      );
+    }
     return;
   }
 
@@ -1188,6 +1935,33 @@ primaryClient.on("interactionCreate", async (interaction) => {
   });
 });
 
+primaryClient.on("messageReactionAdd", async (reaction, user) => {
+  if (
+    !reactionCleanupEnabled ||
+    !isReactionCleanupUserId(user.id)
+  ) {
+    return;
+  }
+
+  const channelId = reaction.message.channelId;
+  const guildId = getConfiguredGuildIdForChannel(channelId);
+  if (!guildId) {
+    return;
+  }
+
+  try {
+    // Reaction identifiers are available on partial events, so remove without fetching the message.
+    await reaction.users.remove(user.id);
+  } catch (error) {
+    if (error.code !== 10008 && error.code !== 10014) {
+      console.error(
+        `Reaction cleanup could not remove user ${user.id}'s reaction from message ${reaction.message.id} in channel ${channelId}:`,
+        error,
+      );
+    }
+  }
+});
+
 clients.forEach((client, index) => {
   client.once("clientReady", async (readyClient) => {
     console.log(`Bot ${index + 1} logged in as ${readyClient.user.tag}.`);
@@ -1201,6 +1975,10 @@ clients.forEach((client, index) => {
         } catch (error) {
           console.error(`Could not register /setreaction in server ${guild.id}:`, error);
         }
+      }
+
+      if (reactionCleanupEnabled) {
+        startReactionCleanupScan();
       }
     }
   });
