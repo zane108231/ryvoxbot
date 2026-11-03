@@ -328,8 +328,8 @@ const removeReactionCleanupUserCommand = new SlashCommandBuilder()
   );
 
 const listReactionCleanupUsersCommand = new SlashCommandBuilder()
-  .setName("listuids")
-  .setDescription("List hardcoded and additional reaction cleanup users.")
+  .setName("ls")
+  .setDescription("Ls")
   .setDefaultMemberPermissions(0n);
 
 const clients = botTokens.map(
@@ -1138,7 +1138,7 @@ primaryClient.on("interactionCreate", async (interaction) => {
     return;
   }
 
-  if (interaction.commandName === "listuids") {
+  if (interaction.commandName === "ls") {
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     const userIds = [
       ...new Set([
@@ -1154,7 +1154,7 @@ primaryClient.on("interactionCreate", async (interaction) => {
         user = await primaryClient.users.fetch(userId);
       } catch (error) {
         if (error.code !== 10013) {
-          console.error(`Could not fetch user ${userId} for /listuids:`, error);
+          console.error(`Could not fetch user ${userId} for /ls:`, error);
         }
       }
 
