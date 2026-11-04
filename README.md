@@ -19,6 +19,7 @@ restarting the bots.
    DISCORD_TOKEN_5=fifth_bot_token
    DISCORD_CLIENT_ID=your_application_client_id
    GEMINI_API_KEY=your_google_ai_studio_api_key
+   IG_API_KEY=your_rotated_instagram_api_key
    ```
 
 4. Invite all five bots to each server where they should react. Give each bot
@@ -70,12 +71,12 @@ on or off for the current server. The setting is saved across restarts and does
 not affect the five bots' automatic reactions. The developer and the limited
 admin can use this command.
 
-Automatic reactions are off by default, including after a restart, until an
-admin explicitly enables them. Use `/autoreactor enabled:true` to turn on
+Automatic reactions are off for every configured server after each restart,
+even if they were enabled previously. Use `/autoreactor enabled:true` to turn on
 automatic reactions for all five bots in this server, or
-`/autoreactor enabled:false` to turn them off. This setting is saved across
-restarts. On startup and whenever it is enabled, each bot catches up on existing
-messages in the configured channel; `/setreaction` also starts a history scan.
+`/autoreactor enabled:false` to turn them off. The choice applies until the next
+restart. Startup will not react to messages or scan history unless you enable
+the autoreactor; enabling it or using `/setreaction` starts a history scan.
 
 Reaction cleanup is globally off by default. The developer can use
 `/reactioncleanup enabled:true` to remove reactions from the eight hardcoded
@@ -116,6 +117,15 @@ Xin (Bot 5), and send a custom message as just that bot. The selected bot must
 be online, in the server, and have permission to send messages in the channel.
 Messages are submitted concurrently; Discord.js handles API rate limits.
 Replies and sent messages are posted by the bot accounts, not a human account.
+
+Use developer-only `/setsocials` to select the channel where Instagram profile
+cards should be posted. In that channel, send `,ig username` to look up the
+profile through the API at
+`https://fetchyig.onrender.com/api/instagram/<username>`. Set `IG_API_KEY` in
+the bot's environment; the bot sends it as the API's `api_key` query parameter.
+The card shows the username, bio, follower/following/post counts, profile
+image, and a clickable link to the Instagram profile. Keep the lookup API
+available on Render. Never commit or share the API key.
 
 Send a message beginning with `.rr` (for example `.rr kumusta ka?` or
 `.rrkumusta ka?`), or mention the primary bot (for example `@Ruta hoy gago`),

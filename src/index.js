@@ -3,6 +3,7 @@ require("dotenv").config();
 const {
   ChannelType,
   Client,
+  EmbedBuilder,
   GatewayIntentBits,
   MessageFlags,
   Partials,
@@ -24,7 +25,7 @@ const path = require("node:path");
 const personality = require("./personality");
 const xinPersonality = require("./xin-personality");
 
-const { DISCORD_CLIENT_ID, GEMINI_API_KEY } = process.env;
+const { DISCORD_CLIENT_ID, GEMINI_API_KEY, IG_API_KEY } = process.env;
 const AI_USER_COOLDOWN_MS = 5000;
 const DEVELOPER_USER_ID = "766135407590244383";
 const LIMITED_ADMIN_USER_ID = "1514233018284380263";
@@ -48,6 +49,8 @@ const botTokens = [
 ];
 const CONFIG_PATH = path.join(__dirname, "..", "config.json");
 const REACTION_EMOJI_NAME = "haha";
+const INSTAGRAM_API_BASE_URL = "https://fetchyig.onrender.com/api/instagram";
+const instagramApiKey = IG_API_KEY?.trim();
 const tokenIsConfigured = (token) => token && !/^(?:put_|your_)/i.test(token);
 const geminiApiKey = GEMINI_API_KEY?.trim();
 const gemini =
@@ -130,6 +133,20 @@ function saveSettings() {
   );
 }
 
+let autoreactorSettingsReset = false;
+for (const configuration of Object.values(settings)) {
+  if (configuration.autoreactorEnabled !== false) {
+    configuration.autoreactorEnabled = false;
+    autoreactorSettingsReset = true;
+  }
+}
+if (autoreactorSettingsReset) {
+  saveSettings();
+  console.log(
+    "Automatic reactions are off for every configured server after startup; enable them with /autoreactor.",
+  );
+}
+
 function isReactionCleanupUserId(userId) {
   return (
     HARDCODED_REACTION_CLEANUP_USER_IDS.has(userId) ||
@@ -145,6 +162,18 @@ const setReactionCommand = new SlashCommandBuilder()
     option
       .setName("channel")
       .setDescription("The channel whose messages should be reacted to.")
+      .addChannelTypes(ChannelType.GuildText)
+      .setRequired(true),
+  );
+
+const setSocialsCommand = new SlashCommandBuilder()
+  .setName("setsocials")
+  .setDescription("Choose the channel where Instagram profile cards are posted.")
+  .setDefaultMemberPermissions(0n)
+  .addChannelOption((option) =>
+    option
+      .setName("channel")
+      .setDescription("The channel where users can use ,ig username.")
       .addChannelTypes(ChannelType.GuildText)
       .setRequired(true),
   );
@@ -381,6 +410,7 @@ async function registerCommand(guildId) {
   await rest.put(Routes.applicationGuildCommands(DISCORD_CLIENT_ID, guildId), {
     body: [
       setReactionCommand.toJSON(),
+      setSocialsCommand.toJSON(),
       sendMessageCommand.toJSON(),
       sendAsCommand.toJSON(),
       replyCommand.toJSON(),
@@ -397,7 +427,7 @@ async function registerCommand(guildId) {
     ],
   });
   console.log(
-    `Registered /setreaction, /sendmessage, /sendas, /reply, /ai, /autoreactor, /join, /botvoice, /playsound, /rc, /adru, /addu, /rv, and /listuids in server ${guildId}.`,
+    `Registered /setreaction, /setsocials, /sendmessage, /sendas, /reply, /ai, /autoreactor, /join, /botvoice, /playsound, /rc, /adru, /addu, /rv, and /listuids in server ${guildId}.`,
   );
 }
 
@@ -908,6 +938,141 @@ function parseMessageReference(input) {
   }
 }
 
+async function fetchInstagramProfile(username) {
+  if (!instagramApiKey) {
+    throw new Error("IG_API_KEY is not configured in the bot environment.");
+  }
+
+  const apiUrl = new URL(
+    `${INSTAGRAM_API_BASE_URL}/${encodeURIComponent(username)}`,
+  );
+  apiUrl.searchParams.set("api_key", instagramApiKey);
+  const response = await fetch(apiUrl, {
+    headers: { Accept: "application/json" },
+    signal: AbortSignal.timeout(10_000),
+  });
+
+  if (!response.ok) {
+    throw new Error(`Instagram lookup API returned HTTP ${response.status}.`);
+  }
+
+  const result = await response.json();
+  if (
+    result?.success !== true ||
+    !result.profile ||
+    typeof result.profile !== "object"
+  ) {
+    throw new Error("Instagram lookup API returned no profile.");
+  }
+
+  const profile = result.profile;
+  const profileImage =
+    typeof profile.profile_pic === "string" ? profile.profile_pic : "";
+  if (profileImage) {
+    let imageUrl;
+    try {
+      imageUrl = new URL(profileImage);
+    } catch {
+      throw new Error("Instagram lookup API returned an invalid profile image URL.");
+    }
+    if (imageUrl.protocol !== "https:") {
+      throw new Error("Instagram lookup API returned a non-HTTPS profile image URL.");
+    }
+  }
+
+  return {
+    username:
+      typeof profile.username === "string" && profile.username.trim()
+        ? profile.username.trim()
+        : username,
+    fullName:
+      typeof profile.full_name === "string" ? profile.full_name.trim() : "",
+    bio: typeof profile.bio === "string" ? profile.bio.trim() : "",
+    followers:
+      typeof profile.followers === "string" ||
+      typeof profile.followers === "number"
+        ? String(profile.followers)
+        : "—",
+    following:
+      typeof profile.following === "string" ||
+      typeof profile.following === "number"
+        ? String(profile.following)
+        : "—",
+    posts:
+      typeof profile.posts_count === "string" ||
+      typeof profile.posts_count === "number"
+        ? String(profile.posts_count)
+        : typeof profile.posts === "string" ||
+            typeof profile.posts === "number"
+          ? String(profile.posts)
+          : "—",
+    profileImage,
+  };
+}
+
+async function handleInstagramCommand(message) {
+  const match = message.content.match(/^,ig(?:\s+(.+?))?\s*$/i);
+  if (!match) {
+    return false;
+  }
+
+  const username = match[1]?.trim().replace(/^@/, "");
+  if (!username || !/^[A-Za-z0-9._]{1,30}$/.test(username)) {
+    await message.reply({
+      content: "Use `,ig username` with a valid Instagram username.",
+      allowedMentions: { parse: [] },
+    });
+    return true;
+  }
+
+  const profileUrl = `https://www.instagram.com/${encodeURIComponent(username)}/`;
+  try {
+    const profile = await fetchInstagramProfile(username);
+    const profileUrl = `https://www.instagram.com/${encodeURIComponent(profile.username)}/`;
+    const displayName =
+      profile.fullName.toLowerCase() === profile.username.toLowerCase()
+        ? profile.fullName.charAt(0).toUpperCase() + profile.fullName.slice(1)
+        : profile.fullName || profile.username;
+    const embed = new EmbedBuilder()
+      .setColor(0x5c5f66)
+      .setDescription(
+        [
+          `[${displayName} @${profile.username}](<${profileUrl}>)`,
+          profile.bio
+            ? `> ${profile.bio.replace(/\r?\n/g, "\n> ")}`
+            : null,
+        ]
+          .filter(Boolean)
+          .join("\n\n"),
+      )
+      .addFields(
+        { name: "followers", value: profile.followers, inline: false },
+        { name: "following", value: profile.following, inline: false },
+        { name: "posts", value: profile.posts, inline: false },
+      );
+    if (profile.profileImage) {
+      embed.setThumbnail(profile.profileImage);
+    }
+    await message.reply({
+      embeds: [embed],
+      allowedMentions: { parse: [] },
+    });
+  } catch (error) {
+    console.error(`Could not load Instagram profile for @${username}:`, error);
+    const embed = new EmbedBuilder()
+      .setColor(0xe1306c)
+      .setAuthor({ name: `@${username}`, url: profileUrl })
+      .setDescription(
+        `[View Instagram profile](<${profileUrl}>)\nThe Instagram lookup API could not load this profile.`,
+      );
+    await message.reply({
+      embeds: [embed],
+      allowedMentions: { parse: [] },
+    });
+  }
+  return true;
+}
+
 primaryClient.on("guildCreate", async (guild) => {
   try {
     await registerCommand(guild.id);
@@ -964,6 +1129,74 @@ primaryClient.on("interactionCreate", async (interaction) => {
   if (!isDeveloper && !isLimitedAdminCommand) {
     await interaction.reply({
       content: "You are not authorized to use this bot command.",
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+
+  if (interaction.commandName === "setsocials") {
+    if (!interaction.guild) {
+      await interaction.reply({
+        content: "This command can only be used in a server.",
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
+
+    const channel = interaction.options.getChannel("channel", true);
+    if (
+      channel.type !== ChannelType.GuildText ||
+      channel.guildId !== interaction.guildId
+    ) {
+      await interaction.reply({
+        content: "Choose a text channel in this server.",
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
+
+    const botMember = interaction.guild.members.me;
+    const permissions = botMember && channel.permissionsFor(botMember);
+    if (
+      !permissions?.has([
+        PermissionFlagsBits.ViewChannel,
+        PermissionFlagsBits.SendMessages,
+      ])
+    ) {
+      await interaction.reply({
+        content: "Ruta needs View Channel and Send Messages permissions in that channel.",
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
+
+    const previousSettings = settings[interaction.guildId];
+    settings[interaction.guildId] = {
+      ...previousSettings,
+      socialsChannelId: channel.id,
+    };
+
+    try {
+      saveSettings();
+    } catch (error) {
+      if (previousSettings) {
+        settings[interaction.guildId] = previousSettings;
+      } else {
+        delete settings[interaction.guildId];
+      }
+      console.error(
+        `Could not save the socials channel for server ${interaction.guildId}:`,
+        error,
+      );
+      await interaction.reply({
+        content: "I couldn't save that channel. Check that I can write config.json.",
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
+
+    await interaction.reply({
+      content: `Instagram profile cards will be posted in <#${channel.id}> when someone uses \`,ig username\`.`,
       flags: MessageFlags.Ephemeral,
     });
     return;
@@ -1985,6 +2218,15 @@ clients.forEach((client, index) => {
 
   client.on("messageCreate", async (message) => {
     if (!message.guildId) {
+      return;
+    }
+
+    if (
+      index === 0 &&
+      !message.author.bot &&
+      settings[message.guildId]?.socialsChannelId === message.channelId &&
+      (await handleInstagramCommand(message))
+    ) {
       return;
     }
 

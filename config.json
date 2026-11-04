@@ -2,12 +2,19 @@
   "reactionCleanupEnabled": true,
   "reactionCleanupUserIds": [
     "1560936068948434995",
-    "1522490598731288680"
+    "1522490598731288680",
+    "766135407590244383"
   ],
   "1558416950726500415": {
     "channelId": "1558430415851888771",
     "emojiId": "<:haha:1562138869787533372>",
     "aiEnabled": false,
-    "autoreactorEnabled": true
+    "autoreactorEnabled": false,
+    "socialsChannelId": "1558431172827021372"
+  },
+  "1554133907161489431": {
+    "socialsChannelId": "1558738096827277402",
+    "autoreactorEnabled": false,
+    "aiEnabled": true
   }
 }
