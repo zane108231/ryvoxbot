@@ -49,7 +49,7 @@ const botTokens = [
 ];
 const CONFIG_PATH = path.join(__dirname, "..", "config.json");
 const REACTION_EMOJI_NAME = "haha";
-const INSTAGRAM_API_BASE_URL = "https://fetchyig.onrender.com/api/instagram";
+const INSTAGRAM_API_BASE_URL = "https://fetchyig.onrender.com/api";
 const instagramApiKey = IG_API_KEY?.trim();
 const tokenIsConfigured = (token) => token && !/^(?:put_|your_)/i.test(token);
 const geminiApiKey = GEMINI_API_KEY?.trim();
@@ -173,7 +173,7 @@ const setSocialsCommand = new SlashCommandBuilder()
   .addChannelOption((option) =>
     option
       .setName("channel")
-      .setDescription("The channel where users can use ,ig username.")
+      .setDescription("The channel where users can use ig username.")
       .addChannelTypes(ChannelType.GuildText)
       .setRequired(true),
   );
@@ -957,17 +957,20 @@ async function fetchInstagramProfile(username) {
   }
 
   const result = await response.json();
-  if (
-    result?.success !== true ||
-    !result.profile ||
-    typeof result.profile !== "object"
-  ) {
+  if (!result || typeof result !== "object" || Array.isArray(result) || result.success === false) {
     throw new Error("Instagram lookup API returned no profile.");
   }
 
-  const profile = result.profile;
+  const profile =
+    result.profile && typeof result.profile === "object"
+      ? result.profile
+      : result;
   const profileImage =
-    typeof profile.profile_pic === "string" ? profile.profile_pic : "";
+    typeof profile.profile_pic_url === "string"
+      ? profile.profile_pic_url
+      : typeof profile.profile_pic === "string"
+        ? profile.profile_pic
+        : "";
   if (profileImage) {
     let imageUrl;
     try {
@@ -986,7 +989,11 @@ async function fetchInstagramProfile(username) {
         ? profile.username.trim()
         : username,
     fullName:
-      typeof profile.full_name === "string" ? profile.full_name.trim() : "",
+      typeof profile.name === "string"
+        ? profile.name.trim()
+        : typeof profile.full_name === "string"
+          ? profile.full_name.trim()
+          : "",
     bio: typeof profile.bio === "string" ? profile.bio.trim() : "",
     followers:
       typeof profile.followers === "string" ||
@@ -1011,7 +1018,7 @@ async function fetchInstagramProfile(username) {
 }
 
 async function handleInstagramCommand(message) {
-  const match = message.content.match(/^,ig(?:\s+(.+?))?\s*$/i);
+  const match = message.content.match(/^ig(?:\s+(.+?))?\s*$/i);
   if (!match) {
     return false;
   }
@@ -1019,7 +1026,7 @@ async function handleInstagramCommand(message) {
   const username = match[1]?.trim().replace(/^@/, "");
   if (!username || !/^[A-Za-z0-9._]{1,30}$/.test(username)) {
     await message.reply({
-      content: "Use `,ig username` with a valid Instagram username.",
+      content: "Use `ig username` with a valid Instagram username.",
       allowedMentions: { parse: [] },
     });
     return true;
@@ -1196,7 +1203,7 @@ primaryClient.on("interactionCreate", async (interaction) => {
     }
 
     await interaction.reply({
-      content: `Instagram profile cards will be posted in <#${channel.id}> when someone uses \`,ig username\`.`,
+      content: `Instagram profile cards will be posted in <#${channel.id}> when someone uses \`ig username\`.`,
       flags: MessageFlags.Ephemeral,
     });
     return;

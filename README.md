@@ -119,9 +119,9 @@ Messages are submitted concurrently; Discord.js handles API rate limits.
 Replies and sent messages are posted by the bot accounts, not a human account.
 
 Use developer-only `/setsocials` to select the channel where Instagram profile
-cards should be posted. In that channel, send `,ig username` to look up the
+cards should be posted. In that channel, send `ig username` to look up the
 profile through the API at
-`https://fetchyig.onrender.com/api/instagram/<username>`. Set `IG_API_KEY` in
+`https://fetchyig.onrender.com/api/<username>`. Set `IG_API_KEY` in
 the bot's environment; the bot sends it as the API's `api_key` query parameter.
 The card shows the username, bio, follower/following/post counts, profile
 image, and a clickable link to the Instagram profile. Keep the lookup API
