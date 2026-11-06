@@ -30,8 +30,8 @@ restarting the bots.
    Discord Developer Portal,
    enable the **Message Content Intent** for Bot 1 and Bot 5: Bot 1 handles
    `.rr` and direct Ruta mentions, while Bot 5 handles direct Xin mentions.
-   Bots 2–4 do not need that privileged intent. No bot needs the Server
-   Members privileged intent.
+   Bots 2–4 do not need that privileged intent. Enable the **Server Members
+   Intent** for Bot 1 so it can detect when an ad representative leaves.
 5. From this folder, run:
 
    ```sh
@@ -50,11 +50,11 @@ custom domain in Render if you want that specific address.
 Developer ID `766135407590244383` can use all slash commands. ID
 `1514233018284380263` can use only `/ai` and `/autoreactor`. All other users are
 denied by the bot, even if they can see a command in Discord.
-`/setreaction`, `/reactioncleanup`, `/addreactionuser`, `/adduid`, `/removeuid`,
-and `/listuids` are disabled for regular members by default in Discord command
-permissions. Discord may still show disabled commands to server
-administrators; the bot's ID check still blocks everyone except the developer
-from running them.
+`/setreaction`, `/setsocials`, `/setads`, `/reactioncleanup`, `/addreactionuser`,
+`/adduid`, `/removeuid`, and `/listuids` are disabled for regular members by
+default in Discord command permissions. Discord may still show disabled
+commands to server administrators; the bot's ID check still blocks everyone
+except the developer from running them.
 Select a text channel with `/setreaction`, and all five bots will use that
 server's custom emoji named `haha`. The emoji must exist in the server, and all
 five bot accounts must be members of that server. Only the primary bot
@@ -126,6 +126,26 @@ the bot's environment; the bot sends it as the API's `api_key` query parameter.
 The card shows the username, bio, follower/following/post counts, profile
 image, and a clickable link to the Instagram profile. Keep the lookup API
 available on Render. Never commit or share the API key.
+
+Use developer-only `/setads` and select the staff advertisement channel. Ruta
+creates or secures a private `#ads-log` channel, visible to the developer who
+ran the command, the bot, server administrators, and the server owner. Add any
+other staff roles you want through the channel's permission settings in
+Discord. Ruta needs Manage Channels in the server and View Channel, Read
+Message History, and Manage Messages in the ads channel. When a member leaves,
+the bot scans the configured ads channel for user mentions anywhere in each
+message, with or without a `rep:` label. If a mentioned representative leaves,
+it first saves a compact embed snapshot of the ad text, media preview, mentioned
+user, poster, and source link to `#ads-log`, then deletes the advertisement.
+Excess blank/spacing-only lines are removed, and raw media URLs are not listed.
+The log shows Discord mentions instead of raw user IDs. If it cannot save the
+snapshot, it leaves the ad in place. Bot 1's Server Members privileged intent
+must be enabled in the Discord Developer Portal for departure events to work.
+Use developer-only `/scanads` to check existing ads against current server
+membership and remove ads whose mentioned representatives had already left.
+This fetches the status of mentioned users from Discord; if a membership check
+fails for a reason other than the user no longer being in the server, the scan
+stops rather than treating that user as departed.
 
 Send a message beginning with `.rr` (for example `.rr kumusta ka?` or
 `.rrkumusta ka?`), or mention the primary bot (for example `@Ruta hoy gago`),

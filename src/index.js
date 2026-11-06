@@ -178,6 +178,23 @@ const setSocialsCommand = new SlashCommandBuilder()
       .setRequired(true),
   );
 
+const setAdsCommand = new SlashCommandBuilder()
+  .setName("setads")
+  .setDescription("Set the ads channel and create a private ads-log channel.")
+  .setDefaultMemberPermissions(0n)
+  .addChannelOption((option) =>
+    option
+      .setName("channel")
+      .setDescription("The channel where staff post advertisements.")
+      .addChannelTypes(ChannelType.GuildText)
+      .setRequired(true),
+  );
+
+const scanAdsCommand = new SlashCommandBuilder()
+  .setName("scanads")
+  .setDescription("Find and remove ads for users who already left the server.")
+  .setDefaultMemberPermissions(0n);
+
 const sendMessageCommand = new SlashCommandBuilder()
   .setName("sendmessage")
   .setDescription("Send a message to the configured channel from all five bots.")
@@ -368,7 +385,12 @@ const clients = botTokens.map(
         GatewayIntentBits.Guilds,
         GatewayIntentBits.GuildMessages,
         GatewayIntentBits.GuildVoiceStates,
-        ...(index === 0 ? [GatewayIntentBits.GuildMessageReactions] : []),
+        ...(index === 0
+          ? [
+              GatewayIntentBits.GuildMessageReactions,
+              GatewayIntentBits.GuildMembers,
+            ]
+          : []),
         ...([0, 4].includes(index) ? [GatewayIntentBits.MessageContent] : []),
       ],
       ...(index === 0
@@ -411,6 +433,8 @@ async function registerCommand(guildId) {
     body: [
       setReactionCommand.toJSON(),
       setSocialsCommand.toJSON(),
+      setAdsCommand.toJSON(),
+      scanAdsCommand.toJSON(),
       sendMessageCommand.toJSON(),
       sendAsCommand.toJSON(),
       replyCommand.toJSON(),
@@ -427,7 +451,7 @@ async function registerCommand(guildId) {
     ],
   });
   console.log(
-    `Registered /setreaction, /setsocials, /sendmessage, /sendas, /reply, /ai, /autoreactor, /join, /botvoice, /playsound, /rc, /adru, /addu, /rv, and /listuids in server ${guildId}.`,
+    `Registered /setreaction, /setsocials, /setads, /scanads, /sendmessage, /sendas, /reply, /ai, /autoreactor, /join, /botvoice, /playsound, /rc, /adru, /addu, /rv, and /listuids in server ${guildId}.`,
   );
 }
 
@@ -1080,6 +1104,314 @@ async function handleInstagramCommand(message) {
   return true;
 }
 
+function getAdRepresentativeIds(content) {
+  return [
+    ...new Set(
+      [...content.matchAll(/<@!?(\d{17,20})>/g)].map((match) => match[1]),
+    ),
+  ];
+}
+
+function formatAdSnapshotContent(content) {
+  const lines = content
+    .replace(/\r\n?/g, "\n")
+    .split("\n")
+    .map((line) =>
+      line.replace(
+        /^[\s\u2000-\u200f\u2800\u3000\u3164]+|[\s\u2000-\u200f\u2800\u3000\u3164]+$/g,
+        "",
+      ),
+    );
+  const formattedLines = [];
+  let previousLineWasBlank = true;
+
+  for (const line of lines) {
+    if (!line) {
+      if (!previousLineWasBlank) {
+        formattedLines.push("");
+      }
+      previousLineWasBlank = true;
+      continue;
+    }
+
+    formattedLines.push(line);
+    previousLineWasBlank = false;
+  }
+
+  while (formattedLines.at(-1) === "") {
+    formattedLines.pop();
+  }
+
+  return formattedLines.join("\n");
+}
+
+function getAdsLogPermissionOverwrites(guild, setupUserId) {
+  return [
+    {
+      id: guild.id,
+      deny: [PermissionFlagsBits.ViewChannel],
+    },
+    {
+      id: setupUserId,
+      allow: [
+        PermissionFlagsBits.ViewChannel,
+        PermissionFlagsBits.ReadMessageHistory,
+        PermissionFlagsBits.SendMessages,
+        PermissionFlagsBits.EmbedLinks,
+      ],
+    },
+    {
+      id: guild.members.me.id,
+      allow: [
+        PermissionFlagsBits.ViewChannel,
+        PermissionFlagsBits.ReadMessageHistory,
+        PermissionFlagsBits.SendMessages,
+        PermissionFlagsBits.EmbedLinks,
+      ],
+    },
+  ];
+}
+
+async function getAdsCleanupTargets(guild) {
+  const configuration = settings[guild.id];
+  if (!configuration?.adsChannelId || !configuration.adsLogChannelId) {
+    throw new Error("Ads cleanup is not configured. Run /setads first.");
+  }
+
+  const channel = await guild.channels.fetch(configuration.adsChannelId);
+  if (!channel || channel.type !== ChannelType.GuildText) {
+    throw new Error(
+      `Configured ads channel ${configuration.adsChannelId} is missing or is not a text channel.`,
+    );
+  }
+
+  const logChannel = await guild.channels.fetch(configuration.adsLogChannelId);
+  if (!logChannel || logChannel.type !== ChannelType.GuildText) {
+    throw new Error(
+      `Configured ads log channel ${configuration.adsLogChannelId} is missing or is not a text channel.`,
+    );
+  }
+
+  const botMember = guild.members.me;
+  const adPermissions = botMember && channel.permissionsFor(botMember);
+  if (
+    !adPermissions?.has([
+      PermissionFlagsBits.ViewChannel,
+      PermissionFlagsBits.ReadMessageHistory,
+      PermissionFlagsBits.ManageMessages,
+    ])
+  ) {
+    throw new Error(
+      `The primary bot needs View Channel, Read Message History, and Manage Messages in ads channel ${channel.id}.`,
+    );
+  }
+
+  const logPermissions = botMember && logChannel.permissionsFor(botMember);
+  if (
+    !logPermissions?.has([
+      PermissionFlagsBits.ViewChannel,
+      PermissionFlagsBits.SendMessages,
+      PermissionFlagsBits.EmbedLinks,
+    ])
+  ) {
+    throw new Error(
+      `The primary bot needs View Channel, Send Messages, and Embed Links in #ads-log (${logChannel.id}).`,
+    );
+  }
+
+  return { channel, logChannel };
+}
+
+async function saveAndDeleteAdSnapshot(
+  guild,
+  channel,
+  logChannel,
+  adMessage,
+  representativeIds,
+) {
+  const sourceUrl = `https://discord.com/channels/${guild.id}/${channel.id}/${adMessage.id}`;
+  const mediaUrls = [
+    ...adMessage.attachments.map((attachment) => attachment.url),
+    ...adMessage.embeds.flatMap((embed) => [
+      embed.image?.url,
+      embed.thumbnail?.url,
+    ]),
+  ]
+    .filter((url) => typeof url === "string" && url.startsWith("https://"))
+    .filter((url, index, urls) => urls.indexOf(url) === index);
+  const adContent =
+    formatAdSnapshotContent(adMessage.content) ||
+    "(No message text; see media preview or source link.)";
+  const adEmbed = new EmbedBuilder()
+    .setColor(0xe74c3c)
+    .setTitle("Advertisement removed")
+    .setDescription(
+      adContent.length > 3000
+        ? `${adContent.slice(0, 2997)}...`
+        : adContent,
+    )
+    .addFields(
+      {
+        name: "Representative who left",
+        value: representativeIds.map((id) => `<@${id}>`).join(", "),
+        inline: true,
+      },
+      {
+        name: "Ad posted by",
+        value: `<@${adMessage.author.id}>`,
+        inline: true,
+      },
+      {
+        name: "Original ad",
+        value: `[Open source message](<${sourceUrl}>)`,
+        inline: false,
+      },
+    )
+    .setTimestamp(adMessage.createdAt);
+  if (mediaUrls.length > 0) {
+    adEmbed.setImage(mediaUrls[0]);
+  }
+
+  try {
+    await logChannel.send({
+      embeds: [adEmbed],
+      allowedMentions: { parse: [] },
+    });
+  } catch (error) {
+    console.error(
+      `Could not save ad ${adMessage.id} to #ads-log; leaving the original ad in place:`,
+      error,
+    );
+    return false;
+  }
+
+  try {
+    await adMessage.delete();
+    return true;
+  } catch (error) {
+    if (error.code !== 10008) {
+      console.error(
+        `Could not delete ad message ${adMessage.id} after saving its snapshot:`,
+        error,
+      );
+    }
+    return false;
+  }
+}
+
+async function removeAdsForDepartedMember(member) {
+  const { guild } = member;
+  const { channel, logChannel } = await getAdsCleanupTargets(guild);
+  let before;
+  while (true) {
+    const messages = await channel.messages.fetch({
+      limit: 100,
+      ...(before ? { before } : {}),
+    });
+    if (messages.size === 0) {
+      break;
+    }
+
+    before = messages.last().id;
+    for (const adMessage of messages.values()) {
+      if (
+        adMessage.author.id === member.id ||
+        !getAdRepresentativeIds(adMessage.content).includes(member.id)
+      ) {
+        continue;
+      }
+
+      await saveAndDeleteAdSnapshot(
+        guild,
+        channel,
+        logChannel,
+        adMessage,
+        [member.id],
+      );
+    }
+  }
+}
+
+async function scanAdsForDepartedMembers(guild) {
+  const { channel, logChannel } = await getAdsCleanupTargets(guild);
+  const memberStatus = new Map();
+  const stats = { scannedMessages: 0, deletedAds: 0, departedUsers: new Set() };
+  let before;
+
+  while (true) {
+    const messages = await channel.messages.fetch({
+      limit: 100,
+      ...(before ? { before } : {}),
+    });
+    if (messages.size === 0) {
+      break;
+    }
+
+    before = messages.last().id;
+    const pageMessages = [...messages.values()];
+    stats.scannedMessages += pageMessages.length;
+    const candidateIds = [
+      ...new Set(
+        pageMessages.flatMap((message) =>
+          getAdRepresentativeIds(message.content).filter(
+            (userId) => userId !== message.author.id,
+          ),
+        ),
+      ),
+    ].filter((userId) => !memberStatus.has(userId));
+
+    for (let index = 0; index < candidateIds.length; index += 5) {
+      await Promise.all(
+        candidateIds.slice(index, index + 5).map(async (userId) => {
+          try {
+            await guild.members.fetch({
+              user: userId,
+              force: true,
+              cache: false,
+            });
+            memberStatus.set(userId, true);
+          } catch (error) {
+            if (error.code === 10007) {
+              memberStatus.set(userId, false);
+              return;
+            }
+            throw error;
+          }
+        }),
+      );
+    }
+
+    for (const adMessage of pageMessages) {
+      const departedRepresentativeIds = getAdRepresentativeIds(
+        adMessage.content,
+      ).filter(
+        (userId) =>
+          userId !== adMessage.author.id && memberStatus.get(userId) === false,
+      );
+      if (departedRepresentativeIds.length === 0) {
+        continue;
+      }
+
+      for (const userId of departedRepresentativeIds) {
+        stats.departedUsers.add(userId);
+      }
+      if (
+        await saveAndDeleteAdSnapshot(
+          guild,
+          channel,
+          logChannel,
+          adMessage,
+          departedRepresentativeIds,
+        )
+      ) {
+        stats.deletedAds += 1;
+      }
+    }
+  }
+
+  return stats;
+}
+
 primaryClient.on("guildCreate", async (guild) => {
   try {
     await registerCommand(guild.id);
@@ -1205,6 +1537,144 @@ primaryClient.on("interactionCreate", async (interaction) => {
     await interaction.reply({
       content: `Instagram profile cards will be posted in <#${channel.id}> when someone uses \`ig username\`.`,
       flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+
+  if (interaction.commandName === "scanads") {
+    if (!interaction.guild) {
+      await interaction.reply({
+        content: "This command can only be used in a server.",
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
+
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    try {
+      const stats = await scanAdsForDepartedMembers(interaction.guild);
+      await interaction.editReply(
+        `Scanned ${stats.scannedMessages} ads-channel messages. Found ${stats.departedUsers.size} departed representative${stats.departedUsers.size === 1 ? "" : "s"} and deleted ${stats.deletedAds} ad${stats.deletedAds === 1 ? "" : "s"}. Each deletion was logged before the original ad was removed.`,
+      );
+    } catch (error) {
+      console.error(
+        `Could not scan existing ads in server ${interaction.guildId}:`,
+        error,
+      );
+      await interaction.editReply(
+        `The ads scan could not finish: ${error.message}`,
+      );
+    }
+    return;
+  }
+
+  if (interaction.commandName === "setads") {
+    if (!interaction.guild) {
+      await interaction.reply({
+        content: "This command can only be used in a server.",
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
+
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    const adsChannel = interaction.options.getChannel("channel", true);
+    if (
+      adsChannel.type !== ChannelType.GuildText ||
+      adsChannel.guildId !== interaction.guildId
+    ) {
+      await interaction.editReply({
+        content: "Choose a text channel in this server.",
+      });
+      return;
+    }
+
+    const guild = interaction.guild;
+    const botMember = guild.members.me;
+    const botPermissions = botMember && adsChannel.permissionsFor(botMember);
+    if (
+      !botPermissions?.has([
+        PermissionFlagsBits.ViewChannel,
+        PermissionFlagsBits.ReadMessageHistory,
+        PermissionFlagsBits.ManageMessages,
+        PermissionFlagsBits.ManageChannels,
+      ])
+    ) {
+      await interaction.editReply({
+        content:
+          "Ruta needs View Channel, Read Message History, Manage Messages, and Manage Channels permissions to configure ad cleanup.",
+      });
+      return;
+    }
+
+    let adsLogChannel;
+    const configuredLogId = settings[guild.id]?.adsLogChannelId;
+    if (configuredLogId) {
+      try {
+        adsLogChannel = await guild.channels.fetch(configuredLogId);
+      } catch (error) {
+        console.error(
+          `Could not fetch configured ads-log channel ${configuredLogId} in server ${guild.id}:`,
+          error,
+        );
+      }
+    }
+    adsLogChannel ??= guild.channels.cache.find(
+      (candidate) =>
+        candidate.name === "ads-log" &&
+        candidate.type === ChannelType.GuildText,
+    );
+
+    const permissionOverwrites = getAdsLogPermissionOverwrites(
+      guild,
+      interaction.user.id,
+    );
+    try {
+      if (adsLogChannel) {
+        await adsLogChannel.permissionOverwrites.set(
+          permissionOverwrites,
+          "Set up the private ads removal log",
+        );
+      } else {
+        adsLogChannel = await guild.channels.create({
+          name: "ads-log",
+          type: ChannelType.GuildText,
+          permissionOverwrites,
+          reason: "Set up the private ads removal log",
+        });
+      }
+    } catch (error) {
+      console.error(`Could not create or secure ads-log in server ${guild.id}:`, error);
+      await interaction.editReply({
+        content:
+          "I couldn't create or secure #ads-log. Check that Ruta has Manage Channels permission.",
+      });
+      return;
+    }
+
+    const previousSettings = settings[guild.id];
+    settings[guild.id] = {
+      ...previousSettings,
+      adsChannelId: adsChannel.id,
+      adsLogChannelId: adsLogChannel.id,
+    };
+    try {
+      saveSettings();
+    } catch (error) {
+      if (previousSettings) {
+        settings[guild.id] = previousSettings;
+      } else {
+        delete settings[guild.id];
+      }
+      console.error(`Could not save ad channel settings for server ${guild.id}:`, error);
+      await interaction.editReply({
+        content: "I couldn't save the ad channel settings. Check that I can write config.json.",
+      });
+      return;
+    }
+
+    await interaction.editReply({
+      content: `Ad cleanup is set for <#${adsChannel.id}>. I created or secured <#${adsLogChannel.id}> so only you, the bot, server administrators, and the owner can view it. You can add staff roles to the log channel's permissions in Discord.`,
     });
     return;
   }
@@ -2199,6 +2669,17 @@ primaryClient.on("messageReactionAdd", async (reaction, user) => {
         error,
       );
     }
+  }
+});
+
+primaryClient.on("guildMemberRemove", async (member) => {
+  try {
+    await removeAdsForDepartedMember(member);
+  } catch (error) {
+    console.error(
+      `Could not process ad cleanup after member ${member.id} left server ${member.guild.id}:`,
+      error,
+    );
   }
 });
 
