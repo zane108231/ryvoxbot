@@ -79,22 +79,22 @@ restart. Startup will not react to messages or scan history unless you enable
 the autoreactor; enabling it or using `/setreaction` starts a history scan.
 
 Reaction cleanup is globally off by default. The developer can use
-`/reactioncleanup enabled:true` to remove reactions from the eight hardcoded
-user IDs in `src/index.js` and any additional IDs added with
-`/addreactionuser user_id:<ID>` or `/adduid`. Use `/adduid` and select up to 24
-Discord users in one command to add them together; already-tracked users are
-skipped. Use `/removeuid user_id:<ID>` to remove an additional ID; the eight
-hardcoded IDs cannot be removed with that command. Use `/listuids` to privately
-view the IDs and their usernames when Discord can resolve them. Adding users
-while cleanup is enabled starts a scan for their existing reactions. Enabling
-cleanup scans each server's configured
-`/setreaction` channel history and removes matching reactions from new messages
-as soon as the primary bot receives Discord's reaction event; Discord/API
-latency means a reaction may be visible briefly before removal. Use
-`/reactioncleanup enabled:false` to disable it globally.
-The primary bot needs View Channel, Read Message History, and Manage Messages
-permissions in each channel. Slash command responses are private to the admin
-who invoked them.
+`/rc enabled:true` to remove reactions from the eight hardcoded user IDs in
+`src/index.js` and additional IDs added with `/adru user_id:<ID>` or `/addu`.
+Use `/addu` and select up to 24 Discord users in one command; already-tracked
+users are skipped. Use `/rv user_id:<ID>` to remove an additional ID; hardcoded
+IDs cannot be removed with that command. Use `/ls` to privately view tracked
+IDs and names. While cleanup is on,
+Bot 1 removes tracked users' reactions in any server channel as soon as it
+receives the reaction event. It also deletes new messages from tracked users
+in any server channel, except for developer ID `766135407590244383`. Discord
+and network latency mean a message or reaction may appear briefly before
+removal; permissions and API limits can also prevent deletion. Historical
+reaction backfills still scan configured `/setreaction` channels. The primary
+bot needs Manage Messages in every channel where it should remove messages or
+reactions; history scans also need View Channel and Read Message History.
+Use `/rc enabled:false` to disable reaction cleanup. Message
+deletion for tracked users remains active independently of that toggle.
 
 Use `/join` and select a voice channel to make all five bots join it. Each bot
 must be online, in the server, and have View Channel and Connect permissions

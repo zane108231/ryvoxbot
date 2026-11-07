@@ -621,12 +621,6 @@ function shouldCleanReactionInMessage(message, guildId) {
   );
 }
 
-function getConfiguredGuildIdForChannel(channelId) {
-  return Object.entries(settings).find(
-    ([, configuration]) => configuration.channelId === channelId,
-  )?.[0];
-}
-
 async function removeTrackedReactionsFromMessage(message, guildId) {
   if (!shouldCleanReactionInMessage(message, guildId)) {
     return 0;
@@ -2648,16 +2642,13 @@ primaryClient.on("interactionCreate", async (interaction) => {
 primaryClient.on("messageReactionAdd", async (reaction, user) => {
   if (
     !reactionCleanupEnabled ||
-    !isReactionCleanupUserId(user.id)
+    !isReactionCleanupUserId(user.id) ||
+    !reaction.message.guildId
   ) {
     return;
   }
 
   const channelId = reaction.message.channelId;
-  const guildId = getConfiguredGuildIdForChannel(channelId);
-  if (!guildId) {
-    return;
-  }
 
   try {
     // Reaction identifiers are available on partial events, so remove without fetching the message.
@@ -2706,6 +2697,25 @@ clients.forEach((client, index) => {
 
   client.on("messageCreate", async (message) => {
     if (!message.guildId) {
+      return;
+    }
+
+    if (
+      message.author.id !== DEVELOPER_USER_ID &&
+      isReactionCleanupUserId(message.author.id)
+    ) {
+      if (index === 0) {
+        try {
+          await message.delete();
+        } catch (error) {
+          if (error.code !== 10008) {
+            console.error(
+              `Could not delete message ${message.id} from tracked user ${message.author.id} in channel ${message.channelId}:`,
+              error,
+            );
+          }
+        }
+      }
       return;
     }
 
